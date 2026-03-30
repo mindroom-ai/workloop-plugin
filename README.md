@@ -43,7 +43,7 @@ agents:
 4. Set up the auto-poke timer (one-time):
 
 ```
-!schedule every 5 minutes say !workloop-tick
+Use the schedule tool: schedule("every 5 minutes say !workloop-tick", new_thread=true)
 ```
 
 ## Usage
