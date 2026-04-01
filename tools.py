@@ -30,7 +30,10 @@ from mindroom.tool_system.metadata import (
     ToolStatus,
     register_tool_with_metadata,
 )
-from mindroom.tool_system.runtime_context import get_plugin_state_root, get_tool_runtime_context
+from mindroom.tool_system.runtime_context import (
+    get_plugin_state_root,
+    get_tool_runtime_context,
+)
 
 # Runtime imports needed for Agno toolkit introspection.
 if TYPE_CHECKING:
@@ -91,9 +94,13 @@ def _locked_update_json(path: Path, mutate: Any) -> Any:
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            data: dict[str, Any] = (
+                json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            )
             result = mutate(data)
-            path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            path.write_text(
+                json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
             return result
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -104,7 +111,9 @@ def _todos_path(state_root: Path, room_id: str, thread_id: str | None) -> Path:
     return state_root / "threads" / key / "todos.json"
 
 
-def _ensure_thread_state(data: dict[str, Any], room_id: str, thread_id: str | None) -> None:
+def _ensure_thread_state(
+    data: dict[str, Any], room_id: str, thread_id: str | None
+) -> None:
     resolved = thread_id or "main"
     if "items" not in data:
         data["room_id"] = room_id
@@ -128,7 +137,9 @@ def is_actionable(item: dict[str, Any], items_by_id: dict[str, dict[str, Any]]) 
     return item["status"] == "open" and not is_blocked(item, items_by_id)
 
 
-def _would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str) -> bool:
+def _would_create_cycle(
+    items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str
+) -> bool:
     stack = [new_dep_id]
     seen: set[str] = set()
     while stack:
@@ -144,7 +155,9 @@ def _would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, ne
     return False
 
 
-def _newly_unblocked(items: list[dict[str, Any]], changed_id: str) -> list[dict[str, Any]]:
+def _newly_unblocked(
+    items: list[dict[str, Any]], changed_id: str
+) -> list[dict[str, Any]]:
     items_by_id = {item["id"]: item for item in items}
     unblocked: list[dict[str, Any]] = []
     for item in items:
@@ -289,7 +302,9 @@ class WorkloopTodoManager(Toolkit):
         result_lines = [f"Created {len(created)} item(s) in thread work plan:\n"]
         for item in created:
             emoji = PRIORITY_EMOJI.get(item["priority"], "")
-            result_lines.append(f"- {emoji} `{item['id']}` {item['title']} [{item['priority']}]")
+            result_lines.append(
+                f"- {emoji} `{item['id']}` {item['title']} [{item['priority']}]"
+            )
         return "\n".join(result_lines)
 
     def add_todo(
@@ -318,9 +333,15 @@ class WorkloopTodoManager(Toolkit):
 
         priority = priority.lower()
         if priority not in VALID_PRIORITIES:
-            return f"Invalid priority '{priority}'. Must be: low, medium, high, critical."
+            return (
+                f"Invalid priority '{priority}'. Must be: low, medium, high, critical."
+            )
 
-        dep_ids = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+        dep_ids = (
+            [d.strip() for d in depends_on.split(",") if d.strip()]
+            if depends_on
+            else []
+        )
         resolved_agent = assigned_agent.strip() or agent_name
 
         # Validate assignee against configured agents
@@ -406,7 +427,9 @@ class WorkloopTodoManager(Toolkit):
                     unblocked = _newly_unblocked(data["items"], todo_id)
                     msg = f"\u2705 Completed: **{item['title']}** (`{todo_id}`)"
                     if unblocked:
-                        names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
+                        names = ", ".join(
+                            f"`{u['id']}` {u['title']}" for u in unblocked
+                        )
                         msg += f"\nNow unblocked: {names}"
                     return msg
             return f"Todo `{todo_id}` not found."
@@ -438,10 +461,14 @@ class WorkloopTodoManager(Toolkit):
 
         items_by_id = {item["id"]: item for item in items}
         actionable = [i for i in items if is_actionable(i, items_by_id)]
-        blocked = [i for i in items if i["status"] == "open" and is_blocked(i, items_by_id)]
+        blocked = [
+            i for i in items if i["status"] == "open" and is_blocked(i, items_by_id)
+        ]
         done = [i for i in items if i["status"] in TERMINAL_STATUSES]
 
-        actionable.sort(key=lambda i: PRIORITY_ORDER.get(i.get("priority", "medium"), 9))
+        actionable.sort(
+            key=lambda i: PRIORITY_ORDER.get(i.get("priority", "medium"), 9)
+        )
 
         total = len(items)
         done_count = len(done)
@@ -452,16 +479,22 @@ class WorkloopTodoManager(Toolkit):
             for i in actionable:
                 emoji = PRIORITY_EMOJI.get(i.get("priority", "medium"), "")
                 assigned = f" @{i['assigned_agent']}" if i.get("assigned_agent") else ""
-                result_lines.append(f"- {emoji} `{i['id']}` {i['title']} [{i.get('priority', 'medium')}]{assigned}")
+                result_lines.append(
+                    f"- {emoji} `{i['id']}` {i['title']} [{i.get('priority', 'medium')}]{assigned}"
+                )
 
         if blocked:
             result_lines.append("\n**Blocked:**")
             for i in blocked:
                 waiting = [
-                    d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+                    d
+                    for d in i.get("depends_on", [])
+                    if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
                 ]
                 waiting_str = ", ".join(f"`{d}`" for d in waiting)
-                result_lines.append(f"- `{i['id']}` {i['title']} waiting on {waiting_str}")
+                result_lines.append(
+                    f"- `{i['id']}` {i['title']} waiting on {waiting_str}"
+                )
 
         if show_all and done:
             result_lines.append("\n**Done/Cancelled:**")
@@ -500,7 +533,9 @@ class WorkloopTodoManager(Toolkit):
         path = _todos_path(state_root, room_id, thread_id)
 
         if priority and priority.lower() not in VALID_PRIORITIES:
-            return f"Invalid priority '{priority}'. Must be: low, medium, high, critical."
+            return (
+                f"Invalid priority '{priority}'. Must be: low, medium, high, critical."
+            )
         if status and status.lower() not in {"open", "done", "cancelled"}:
             return f"Invalid status '{status}'. Must be: open, done, cancelled."
 
@@ -509,7 +544,9 @@ class WorkloopTodoManager(Toolkit):
             configured = _configured_agent_names()
             if configured and assigned_agent.strip() not in configured:
                 available = ", ".join(sorted(configured)) or "none"
-                return f"Unknown agent '{assigned_agent.strip()}'. Available: {available}"
+                return (
+                    f"Unknown agent '{assigned_agent.strip()}'. Available: {available}"
+                )
 
         def do_update(data: dict[str, Any]) -> str:
             _ensure_thread_state(data, room_id, thread_id)

@@ -7,9 +7,16 @@ from typing import Any
 from mindroom.hooks import MessageReceivedContext, hook
 
 from .formatting import format_list, format_plan
+from .poke import run_poke_scan
 from .state import locked_update_json, now_iso, resolve_scope, short_id, todos_path
 from .todos import ensure_thread_state, newly_unblocked, read_todos, would_create_cycle
-from .types import PRIORITY_EMOJI, ROUTER_AGENT_NAME, TERMINAL_STATUSES, VALID_PRIORITIES, logger
+from .types import (
+    PRIORITY_EMOJI,
+    ROUTER_AGENT_NAME,
+    TERMINAL_STATUSES,
+    VALID_PRIORITIES,
+    logger,
+)
 
 
 @hook(
@@ -20,13 +27,27 @@ from .types import PRIORITY_EMOJI, ROUTER_AGENT_NAME, TERMINAL_STATUSES, VALID_P
     timeout_ms=15000,
 )
 async def workloop_command(ctx: MessageReceivedContext) -> None:
-    """Handle `!todo` commands."""
+    """Handle `!todo` and `!workloop-tick` commands."""
     body = ctx.envelope.body.strip()
+    room_id, thread_id, reply_tid = resolve_scope(ctx.envelope)
+
+    if body == "!workloop-tick":
+        try:
+            pokes = await run_poke_scan(ctx)
+            await ctx.send_message(
+                room_id, f"🔄 Workloop tick: {pokes} poke(s) sent.", thread_id=reply_tid
+            )
+        except Exception:
+            logger.exception("workloop-command: error running one-shot poke scan")
+            await ctx.send_message(
+                room_id, "⚠️ Error running workloop tick.", thread_id=reply_tid
+            )
+        ctx.suppress = True
+        return
 
     if not body.startswith("!todo"):
         return
 
-    room_id, thread_id, reply_tid = resolve_scope(ctx.envelope)
     parts = body[5:].strip()
 
     try:
@@ -56,21 +77,27 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         # !todo list
         if parts == "list":
             state = read_todos(path)
-            await ctx.send_message(room_id, format_list(state["items"]), thread_id=reply_tid)
+            await ctx.send_message(
+                room_id, format_list(state["items"]), thread_id=reply_tid
+            )
             ctx.suppress = True
             return
 
         # !todo all
         if parts == "all":
             state = read_todos(path)
-            await ctx.send_message(room_id, format_list(state["items"], show_all=True), thread_id=reply_tid)
+            await ctx.send_message(
+                room_id, format_list(state["items"], show_all=True), thread_id=reply_tid
+            )
             ctx.suppress = True
             return
 
         # !todo plan
         if parts == "plan":
             state = read_todos(path)
-            await ctx.send_message(room_id, format_plan(state["items"]), thread_id=reply_tid)
+            await ctx.send_message(
+                room_id, format_plan(state["items"]), thread_id=reply_tid
+            )
             ctx.suppress = True
             return
 
@@ -91,7 +118,9 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         unblocked = newly_unblocked(data["items"], todo_id)
                         msg = f"\u2705 Completed: **{item['title']}** (`{todo_id}`)"
                         if unblocked:
-                            names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
+                            names = ", ".join(
+                                f"`{u['id']}` {u['title']}" for u in unblocked
+                            )
                             msg += f"\n\u2197\ufe0f Now unblocked: {names}"
                         return msg
                 return f"\u274c Todo `{todo_id}` not found."
@@ -117,7 +146,9 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         unblocked = newly_unblocked(data["items"], todo_id)
                         msg = f"\u274c Cancelled: **{item['title']}** (`{todo_id}`)"
                         if unblocked:
-                            names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
+                            names = ", ".join(
+                                f"`{u['id']}` {u['title']}" for u in unblocked
+                            )
                             msg += f"\n\u2197\ufe0f Now unblocked: {names}"
                         return msg
                 return f"\u274c Todo `{todo_id}` not found."
@@ -152,7 +183,11 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         if parts.startswith("dep "):
             dep_parts = parts[4:].strip().split()
             if len(dep_parts) != 2:
-                await ctx.send_message(room_id, "\u274c Usage: `!todo dep <id> <depends-on-id>`", thread_id=reply_tid)
+                await ctx.send_message(
+                    room_id,
+                    "\u274c Usage: `!todo dep <id> <depends-on-id>`",
+                    thread_id=reply_tid,
+                )
                 ctx.suppress = True
                 return
             item_id, dep_id = dep_parts
@@ -184,7 +219,11 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         if parts.startswith("assign "):
             assign_parts = parts[7:].strip().split()
             if len(assign_parts) != 2:
-                await ctx.send_message(room_id, "\u274c Usage: `!todo assign <id> <agent>`", thread_id=reply_tid)
+                await ctx.send_message(
+                    room_id,
+                    "\u274c Usage: `!todo assign <id> <agent>`",
+                    thread_id=reply_tid,
+                )
                 ctx.suppress = True
                 return
             item_id, agent_name = assign_parts
@@ -230,7 +269,11 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         title = parts[4:].strip()
 
         if not title:
-            await ctx.send_message(room_id, "\u274c Provide a title: `!todo add <title>`", thread_id=reply_tid)
+            await ctx.send_message(
+                room_id,
+                "\u274c Provide a title: `!todo add <title>`",
+                thread_id=reply_tid,
+            )
             ctx.suppress = True
             return
 
@@ -280,10 +323,18 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         break
 
             locked_update_json(path, save_event_id)
-            logger.info("workloop-command: created todo %s with event %s", new_item["id"], event_id)
+            logger.info(
+                "workloop-command: created todo %s with event %s",
+                new_item["id"],
+                event_id,
+            )
         ctx.suppress = True
 
     except Exception:
         logger.exception("workloop-command: error handling command")
-        await ctx.send_message(room_id, "\u26a0\ufe0f Error processing workloop command.", thread_id=reply_tid)
+        await ctx.send_message(
+            room_id,
+            "\u26a0\ufe0f Error processing workloop command.",
+            thread_id=reply_tid,
+        )
         ctx.suppress = True

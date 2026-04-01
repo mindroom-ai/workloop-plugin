@@ -43,7 +43,9 @@ def format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
         lines.append("\n**Blocked:**")
         for i in blocked:
             waiting = [
-                d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+                d
+                for d in i.get("depends_on", [])
+                if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
             ]
             waiting_str = ", ".join(f"`{d}`" for d in waiting)
             lines.append(f"{format_item_line(i)} waiting on {waiting_str}")
@@ -87,9 +89,3 @@ def format_plan(items: list[dict[str, Any]]) -> str:
         )
 
     return "\n".join(lines)
-
-
-# Backward-compatible aliases for older imports.
-_format_item_line = format_item_line
-_format_list = format_list
-_format_plan = format_plan

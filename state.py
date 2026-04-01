@@ -34,7 +34,9 @@ def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     """
     room_id = envelope.room_id
     storage_tid = envelope.target.thread_id  # None for room-level, set for threads
-    reply_tid = envelope.target.resolved_thread_id if envelope.target.thread_id else None
+    reply_tid = (
+        envelope.target.resolved_thread_id if envelope.target.thread_id else None
+    )
     return room_id, storage_tid, reply_tid
 
 
@@ -67,9 +69,13 @@ def locked_update_json(path: Path, mutate: Any) -> Any:
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            data: dict[str, Any] = (
+                json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            )
             result = mutate(data)
-            path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            path.write_text(
+                json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
             return result
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -104,7 +110,9 @@ def read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
     return data
 
 
-def update_agent_state(state_root: Path, agent_name: str, updates: dict[str, Any]) -> None:
+def update_agent_state(
+    state_root: Path, agent_name: str, updates: dict[str, Any]
+) -> None:
     path = agent_state_path(state_root, agent_name)
 
     def mutate(data: dict[str, Any]) -> None:
@@ -125,7 +133,9 @@ def update_agent_state(state_root: Path, agent_name: str, updates: dict[str, Any
     locked_update_json(path, mutate)
 
 
-def poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: datetime) -> None:
+def poke_agent_scope(
+    state_root: Path, agent_name: str, scope_key: str, now: datetime
+) -> None:
     """Record a poke timestamp for a specific thread scope."""
 
     def mutate(data: dict[str, Any]) -> None:
@@ -141,17 +151,3 @@ def poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: dat
 
     path = agent_state_path(state_root, agent_name)
     locked_update_json(path, mutate)
-
-
-# Backward-compatible aliases for older imports.
-_resolve_scope = resolve_scope
-_response_scope_thread_id = response_scope_thread_id
-_now_iso = now_iso
-_short_id = short_id
-_read_json = read_json
-_locked_update_json = locked_update_json
-_todos_path = todos_path
-_agent_state_path = agent_state_path
-_read_agent_state = read_agent_state
-_update_agent_state = update_agent_state
-_poke_agent_scope = poke_agent_scope

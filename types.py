@@ -14,10 +14,13 @@ else:
     from pathlib import Path
     from typing import Any, Protocol
 
-    from mindroom.constants import ROUTER_AGENT_NAME
     from mindroom.hooks import HookMessageSender, HookRoomStateQuerier
 
-    LOGGER_NAME = __name__.rsplit(".", 1)[0].removesuffix("_modules") if "." in __name__ else __name__
+    LOGGER_NAME = (
+        __name__.rsplit(".", 1)[0].removesuffix("_modules")
+        if "." in __name__
+        else __name__
+    )
     logger = logging.getLogger(LOGGER_NAME)
 
     _PLUGIN_NAME = "workloop"
@@ -34,7 +37,6 @@ else:
     }
     PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     DEFAULT_POKE_INTERVAL_SECONDS = 120
-
 
     class PokeScanContext(Protocol):
         settings: dict[str, Any]
@@ -58,7 +60,6 @@ else:
             state_key: str | None = None,
         ) -> dict[str, Any] | None: ...
 
-
     @dataclass(slots=True)
     class AutoPokeRuntime:
         settings: dict[str, Any]
@@ -78,7 +79,9 @@ else:
             trigger_dispatch: bool = False,
         ) -> str | None:
             if self._message_sender is None:
-                self.logger.warning("workloop-auto-poke: send_message called but no sender registered")
+                self.logger.warning(
+                    "workloop-auto-poke: send_message called but no sender registered"
+                )
                 return None
             resolved_extra_content = dict(extra_content or {})
             if trigger_dispatch:
@@ -98,6 +101,8 @@ else:
             state_key: str | None = None,
         ) -> dict[str, Any] | None:
             if self._room_state_querier is None:
-                self.logger.warning("workloop-auto-poke: query_room_state called but no querier registered")
+                self.logger.warning(
+                    "workloop-auto-poke: query_room_state called but no querier registered"
+                )
                 return None
             return await self._room_state_querier(room_id, event_type, state_key)

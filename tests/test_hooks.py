@@ -113,7 +113,9 @@ def _make_runtime(
 
 
 @pytest.mark.asyncio
-async def test_router_start_creates_exactly_one_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_router_start_creates_exactly_one_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     created_tasks: list[asyncio.Task[None]] = []
     real_create_task = asyncio.create_task
@@ -145,12 +147,16 @@ async def test_router_start_creates_exactly_one_task(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_non_router_start_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_non_router_start_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     create_task = Mock(side_effect=AssertionError("create_task should not be called"))
     monkeypatch.setattr(module.asyncio, "create_task", create_task)
 
-    ctx = _make_lifecycle_context(tmp_path, entity_name="worker", agents={"worker": object()})
+    ctx = _make_lifecycle_context(
+        tmp_path, entity_name="worker", agents={"worker": object()}
+    )
 
     await module.start_auto_poke_loop(ctx)
 
@@ -159,7 +165,9 @@ async def test_non_router_start_is_noop(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_second_router_start_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_second_router_start_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     created_tasks: list[asyncio.Task[None]] = []
     real_create_task = asyncio.create_task
@@ -191,7 +199,9 @@ async def test_second_router_start_is_idempotent(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_router_stop_cancels_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_router_stop_cancels_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     stop_event = asyncio.Event()
 
@@ -271,7 +281,9 @@ async def test_router_stop_does_not_clear_newer_task(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_poke_loop_calls_scan_on_interval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_auto_poke_loop_calls_scan_on_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     runtime = _make_runtime(module, tmp_path, settings={"poke_interval_seconds": 7})
     real_sleep = asyncio.sleep
@@ -304,7 +316,9 @@ async def test_auto_poke_loop_invalid_interval_uses_default_and_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_hooks_module()
-    runtime = _make_runtime(module, tmp_path, settings={"poke_interval_seconds": "oops"})
+    runtime = _make_runtime(
+        module, tmp_path, settings={"poke_interval_seconds": "oops"}
+    )
     real_sleep = asyncio.sleep
     sleep_calls: list[int] = []
 
@@ -365,9 +379,13 @@ async def test_auto_poke_loop_logs_exceptions_and_continues(
 
 
 @pytest.mark.asyncio
-async def test_legacy_schedule_is_suppressed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_legacy_schedule_is_suppressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
-    run_scan = AsyncMock(side_effect=AssertionError("legacy schedule should not run scans"))
+    run_scan = AsyncMock(
+        side_effect=AssertionError("legacy schedule should not run scans")
+    )
     warning = Mock()
     monkeypatch.setattr(module, "_run_poke_scan", run_scan)
     monkeypatch.setattr(module.logger, "warning", warning)
@@ -401,7 +419,9 @@ async def test_manual_workloop_tick_still_runs_one_shot_scan(
 
     assert ctx.suppress is True
     run_scan.assert_awaited_once_with(ctx)
-    send_message.assert_awaited_once_with("!room:test", "🔄 Workloop tick: 2 poke(s) sent.", thread_id=None)
+    send_message.assert_awaited_once_with(
+        "!room:test", "🔄 Workloop tick: 2 poke(s) sent.", thread_id=None
+    )
 
 
 @pytest.mark.asyncio
@@ -458,7 +478,9 @@ def _write_thread_todos(
 
 
 @pytest.mark.asyncio
-async def test_poke_scan_fires_in_multiple_threads_for_same_agent(tmp_path: Path) -> None:
+async def test_poke_scan_fires_in_multiple_threads_for_same_agent(
+    tmp_path: Path,
+) -> None:
     """An agent with actionable items in two different threads gets poked in both."""
     module = _load_hooks_module()
     message_sender = AsyncMock(return_value="$event")
@@ -551,13 +573,17 @@ async def test_has_pending_schedules_returns_true_when_matching(tmp_path: Path) 
             },
         }
 
-    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    runtime = _make_runtime(
+        module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier)
+    )
     result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
     assert result is True
 
 
 @pytest.mark.asyncio
-async def test_has_pending_schedules_returns_false_when_no_pending(tmp_path: Path) -> None:
+async def test_has_pending_schedules_returns_false_when_no_pending(
+    tmp_path: Path,
+) -> None:
     module = _load_hooks_module()
 
     async def fake_querier(room_id, event_type, state_key):
@@ -568,13 +594,17 @@ async def test_has_pending_schedules_returns_false_when_no_pending(tmp_path: Pat
             },
         }
 
-    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    runtime = _make_runtime(
+        module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier)
+    )
     result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
     assert result is False
 
 
 @pytest.mark.asyncio
-async def test_has_pending_schedules_returns_false_when_querier_none(tmp_path: Path) -> None:
+async def test_has_pending_schedules_returns_false_when_querier_none(
+    tmp_path: Path,
+) -> None:
     module = _load_hooks_module()
     runtime = _make_runtime(module, tmp_path, room_state_querier=None)
     result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
@@ -593,7 +623,9 @@ async def test_has_pending_schedules_thread_mismatch(tmp_path: Path) -> None:
             },
         }
 
-    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    runtime = _make_runtime(
+        module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier)
+    )
     result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
     assert result is False
 
@@ -611,7 +643,9 @@ async def test_has_pending_schedules_room_level(tmp_path: Path) -> None:
             },
         }
 
-    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    runtime = _make_runtime(
+        module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier)
+    )
     result = await module._has_pending_schedules(runtime, "!room:test", None)
     assert result is True
 
@@ -631,7 +665,9 @@ def test_should_poke_agent_respects_min_idle(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600)
+    result = module._should_poke_agent(
+        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600
+    )
     assert result is False
 
 
@@ -647,7 +683,9 @@ def test_should_poke_agent_min_idle_expired(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600)
+    result = module._should_poke_agent(
+        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600
+    )
     assert result is True
 
 
@@ -663,7 +701,9 @@ def test_should_poke_agent_min_idle_zero_skips_check(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=0)
+    result = module._should_poke_agent(
+        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=0
+    )
     assert result is True
 
 

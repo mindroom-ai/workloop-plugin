@@ -14,11 +14,19 @@ from .types import TERMINAL_STATUSES, logger
 def read_todos(path: Path) -> dict[str, Any]:
     data = read_json(path)
     if not data:
-        return {"room_id": "", "thread_id": "main", "created_at": now_iso(), "updated_at": now_iso(), "items": []}
+        return {
+            "room_id": "",
+            "thread_id": "main",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+            "items": [],
+        }
     return data
 
 
-def ensure_thread_state(data: dict[str, Any], room_id: str, thread_id: str | None) -> None:
+def ensure_thread_state(
+    data: dict[str, Any], room_id: str, thread_id: str | None
+) -> None:
     """Ensure data dict has the required top-level fields."""
     resolved = thread_id or "main"
     if "items" not in data:
@@ -43,7 +51,9 @@ def is_actionable(item: dict[str, Any], items_by_id: dict[str, dict[str, Any]]) 
     return item["status"] == "open" and not is_blocked(item, items_by_id)
 
 
-def would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str) -> bool:
+def would_create_cycle(
+    items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str
+) -> bool:
     stack = [new_dep_id]
     seen: set[str] = set()
     while stack:
@@ -59,7 +69,9 @@ def would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, new
     return False
 
 
-def newly_unblocked(items: list[dict[str, Any]], changed_id: str) -> list[dict[str, Any]]:
+def newly_unblocked(
+    items: list[dict[str, Any]], changed_id: str
+) -> list[dict[str, Any]]:
     items_by_id = {item["id"]: item for item in items}
     unblocked: list[dict[str, Any]] = []
     for item in items:
@@ -127,7 +139,9 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
                     else:
                         msg = f"\u274c Cancelled: **{item['title']}**"
                     if unblocked:
-                        names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
+                        names = ", ".join(
+                            f"`{u['id']}` {u['title']}" for u in unblocked
+                        )
                         msg += f"\n\u2197\ufe0f Now unblocked: {names}"
                     return msg
             return None
@@ -135,16 +149,15 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
         try:
             result = locked_update_json(todos_path, react_update)
             if result:
-                matrix_thread_id = None if state.get("thread_id") == "main" else state.get("thread_id")
+                matrix_thread_id = (
+                    None if state.get("thread_id") == "main" else state.get("thread_id")
+                )
                 await ctx.send_message(ctx.room_id, result, thread_id=matrix_thread_id)
-                logger.info("workloop-react: %s item via reaction on %s", new_status, target_event_id)
+                logger.info(
+                    "workloop-react: %s item via reaction on %s",
+                    new_status,
+                    target_event_id,
+                )
         except Exception:
             logger.exception("workloop-react: error handling reaction")
         return
-
-
-# Backward-compatible aliases for older imports.
-_read_todos = read_todos
-_ensure_thread_state = ensure_thread_state
-_would_create_cycle = would_create_cycle
-_newly_unblocked = newly_unblocked

@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mindroom.hooks import AfterResponseContext, AgentLifecycleContext, EnrichmentItem, MessageEnrichContext, hook
+from mindroom.hooks import (
+    AfterResponseContext,
+    AgentLifecycleContext,
+    EnrichmentItem,
+    MessageEnrichContext,
+    hook,
+)
 
 from .state import (
     agent_state_path,
@@ -109,7 +115,9 @@ def _format_poke_message(
     lines = [f"@{agent_name} workloop resume.\n\nNext actionable items:"]
     for item in agent_items[:5]:
         emoji = PRIORITY_EMOJI.get(item.get("priority", "medium"), "\u26aa")
-        lines.append(f"- {emoji} `{item['id']}` {item['title']} [{item.get('priority', 'medium')}]")
+        lines.append(
+            f"- {emoji} `{item['id']}` {item['title']} [{item.get('priority', 'medium')}]"
+        )
     if len(agent_items) > 5:
         lines.append(f"- ... and {len(agent_items) - 5} more")
     lines.append(f"\nProgress: {done_count}/{total} complete.")
@@ -117,7 +125,9 @@ def _format_poke_message(
     return "\n".join(lines)
 
 
-async def _has_pending_schedules(ctx: PokeScanContext, room_id: str, thread_id: str | None) -> bool:
+async def _has_pending_schedules(
+    ctx: PokeScanContext, room_id: str, thread_id: str | None
+) -> bool:
     result = await ctx.query_room_state(room_id, "com.mindroom.scheduled.task")
     if result is None:
         return False
@@ -146,13 +156,13 @@ async def _run_poke_scan(
     if not threads_dir.exists():
         return 0
 
-    for todos_path in sorted(threads_dir.glob("*/todos.json")):
+    for thread_todos_path in sorted(threads_dir.glob("*/todos.json")):
         if pokes_sent >= max_pokes:
             break
         try:
-            thread_state = read_todos(todos_path)
+            thread_state = read_todos(thread_todos_path)
         except Exception:
-            logger.exception("workloop-poke: failed to read %s", todos_path)
+            logger.exception("workloop-poke: failed to read %s", thread_todos_path)
             continue
         items = thread_state.get("items", [])
         items_by_id = {item["id"]: item for item in items}
@@ -165,14 +175,27 @@ async def _run_poke_scan(
                 break
             if agent_name not in configured_agents:
                 continue
-            matrix_thread_id = None if thread_state.get("thread_id") == "main" else thread_state.get("thread_id")
+            matrix_thread_id = (
+                None
+                if thread_state.get("thread_id") == "main"
+                else thread_state.get("thread_id")
+            )
             room_id = thread_state.get("room_id", "")
             if not room_id:
                 continue
             if await _has_pending_schedules(ctx, room_id, matrix_thread_id):
                 continue
             scope_key = f"{room_id}:{matrix_thread_id or 'main'}"
-            if not _should_poke_agent(ctx.state_root, agent_name, now, cooldown, grace, stale_busy, scope_key=scope_key, min_idle=min_idle):
+            if not _should_poke_agent(
+                ctx.state_root,
+                agent_name,
+                now,
+                cooldown,
+                grace,
+                stale_busy,
+                scope_key=scope_key,
+                min_idle=min_idle,
+            ):
                 continue
             poke_text = _format_poke_message(agent_name, agent_items, items)
             try:
@@ -184,11 +207,21 @@ async def _run_poke_scan(
                 )
                 poke_agent_scope(ctx.state_root, agent_name, scope_key, now)
                 pokes_sent += 1
-                logger.info("workloop-poke: poked %s in room %s thread %s", agent_name, room_id, matrix_thread_id)
+                logger.info(
+                    "workloop-poke: poked %s in room %s thread %s",
+                    agent_name,
+                    room_id,
+                    matrix_thread_id,
+                )
             except Exception:
                 logger.exception("workloop-poke: failed to poke %s", agent_name)
 
     return pokes_sent
+
+
+async def run_poke_scan(ctx: PokeScanContext) -> int:
+    """Run a single auto-poke scan."""
+    return await _run_poke_scan(ctx)
 
 
 def _parse_poke_interval_seconds(settings: dict[str, Any], runtime_logger: Any) -> int:
@@ -213,7 +246,9 @@ async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
             try:
                 await asyncio.sleep(interval)
                 pokes = await _run_poke_scan(runtime)
-                runtime.logger.info("workloop-auto-poke: scan complete, %d poke(s) sent", pokes)
+                runtime.logger.info(
+                    "workloop-auto-poke: scan complete, %d poke(s) sent", pokes
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -251,7 +286,9 @@ async def start_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
         return
 
     runtime = _build_auto_poke_runtime(ctx)
-    _AUTO_POKE_TASK = asyncio.create_task(_auto_poke_loop(runtime), name=f"{_PLUGIN_NAME}-auto-poke")
+    _AUTO_POKE_TASK = asyncio.create_task(
+        _auto_poke_loop(runtime), name=f"{_PLUGIN_NAME}-auto-poke"
+    )
 
 
 @hook(
@@ -302,7 +339,9 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
         path = agent_state_path(ctx.state_root, agent_name)
         locked_update_json(path, _add_active_run)
     except Exception:
-        logger.exception("workloop-context: failed to update agent state for %s", agent_name)
+        logger.exception(
+            "workloop-context: failed to update agent state for %s", agent_name
+        )
 
     # Load thread plan
     path = todos_path(ctx.state_root, room_id, thread_id)
@@ -332,7 +371,9 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
         lines.append("\nActionable:")
         for i in actionable[:max_items]:
             emoji = PRIORITY_EMOJI.get(i.get("priority", "medium"), "\u26aa")
-            lines.append(f"- {emoji} `{i['id']}` {i['title']} [{i.get('priority', 'medium')}]")
+            lines.append(
+                f"- {emoji} `{i['id']}` {i['title']} [{i.get('priority', 'medium')}]"
+            )
         if len(actionable) > max_items:
             lines.append(f"... and {len(actionable) - max_items} more")
 
@@ -340,10 +381,14 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
         lines.append("\nBlocked:")
         for i in blocked[:max_items]:
             waiting = [
-                d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+                d
+                for d in i.get("depends_on", [])
+                if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
             ]
             waiting_str = ", ".join(f"`{d}`" for d in waiting)
-            lines.append(f"- `{i['id']}` {i['title']} [{i.get('priority', 'medium')}] waiting on {waiting_str}")
+            lines.append(
+                f"- `{i['id']}` {i['title']} [{i.get('priority', 'medium')}] waiting on {waiting_str}"
+            )
         if len(blocked) > max_items:
             lines.append(f"... and {len(blocked) - max_items} more")
 
@@ -356,7 +401,9 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
 
     lines.append("\nUse `complete_todo(todo_id)` when you finish an item.")
 
-    return [EnrichmentItem(key="workloop", text="\n".join(lines), cache_policy="volatile")]
+    return [
+        EnrichmentItem(key="workloop", text="\n".join(lines), cache_policy="volatile")
+    ]
 
 
 @hook(
@@ -382,4 +429,6 @@ async def track_idle(ctx: AfterResponseContext) -> None:
         path = agent_state_path(ctx.state_root, agent_name)
         locked_update_json(path, _remove_active_run)
     except Exception:
-        logger.exception("workloop-track-idle: failed to update agent state for %s", agent_name)
+        logger.exception(
+            "workloop-track-idle: failed to update agent state for %s", agent_name
+        )
