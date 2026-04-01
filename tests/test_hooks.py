@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import uuid
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ class LifecycleContextStub:
     _state_root: Path
     logger: Any
     send_message: AsyncMock
+    message_sender: AsyncMock | None
     entity_name: str
 
     @property
@@ -84,17 +86,24 @@ def _make_lifecycle_context(
         _state_root=tmp_path,
         logger=Mock(),
         send_message=AsyncMock(return_value="$event"),
+        message_sender=AsyncMock(return_value="$event"),
         entity_name=entity_name,
     )
 
 
-def _make_runtime(module, tmp_path: Path, *, settings: dict[str, Any] | None = None):
+def _make_runtime(
+    module,
+    tmp_path: Path,
+    *,
+    settings: dict[str, Any] | None = None,
+    message_sender: AsyncMock | None = None,
+):
     return module.AutoPokeRuntime(
         settings=settings or {"poke_interval_seconds": 1},
         config=_make_config(agents={"worker": object()}),
         state_root=tmp_path,
         logger=Mock(),
-        _message_sender=AsyncMock(return_value="$event"),
+        _message_sender=message_sender or AsyncMock(return_value="$event"),
     )
 
 
@@ -204,6 +213,59 @@ async def test_router_stop_cancels_task(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_router_stop_without_start_is_noop(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    ctx = _make_lifecycle_context(
+        tmp_path,
+        entity_name=module.ROUTER_AGENT_NAME,
+        agents={module.ROUTER_AGENT_NAME: object()},
+    )
+
+    await module.stop_auto_poke_loop(ctx)
+
+    assert module._AUTO_POKE_TASK is None
+
+
+@pytest.mark.asyncio
+async def test_router_stop_does_not_clear_newer_task(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+
+    class AwaitableTaskStub:
+        def __init__(self, on_await) -> None:
+            self.cancel_called = False
+            self._on_await = on_await
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def __await__(self):
+            async def _wait():
+                await asyncio.sleep(0)
+                self._on_await()
+
+            return _wait().__await__()
+
+    replacement = asyncio.create_task(asyncio.sleep(3600))
+    task = AwaitableTaskStub(lambda: setattr(module, "_AUTO_POKE_TASK", replacement))
+    module._AUTO_POKE_TASK = task
+    ctx = _make_lifecycle_context(
+        tmp_path,
+        entity_name=module.ROUTER_AGENT_NAME,
+        agents={module.ROUTER_AGENT_NAME: object()},
+    )
+
+    try:
+        await module.stop_auto_poke_loop(ctx)
+
+        assert task.cancel_called is True
+        assert module._AUTO_POKE_TASK is replacement
+    finally:
+        replacement.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replacement
+
+
+@pytest.mark.asyncio
 async def test_auto_poke_loop_calls_scan_on_interval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_hooks_module()
     runtime = _make_runtime(module, tmp_path, settings={"poke_interval_seconds": 7})
@@ -230,6 +292,40 @@ async def test_auto_poke_loop_calls_scan_on_interval(tmp_path: Path, monkeypatch
 
     assert sleep_calls[0] == 7
     assert scan_calls == [runtime]
+
+
+@pytest.mark.asyncio
+async def test_auto_poke_loop_invalid_interval_uses_default_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_hooks_module()
+    runtime = _make_runtime(module, tmp_path, settings={"poke_interval_seconds": "oops"})
+    real_sleep = asyncio.sleep
+    sleep_calls: list[int] = []
+
+    async def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+        await real_sleep(0)
+
+    async def fake_scan(_ctx) -> int:
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        current_task.cancel()
+        await real_sleep(0)
+        return 0
+
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(module, "_run_poke_scan", fake_scan)
+
+    with pytest.raises(asyncio.CancelledError):
+        await module._auto_poke_loop(runtime)
+
+    assert sleep_calls[0] == module.DEFAULT_POKE_INTERVAL_SECONDS
+    runtime.logger.warning.assert_called_once_with(
+        "workloop-auto-poke: invalid poke_interval_seconds=%r; using default %s",
+        "oops",
+        module.DEFAULT_POKE_INTERVAL_SECONDS,
+    )
 
 
 @pytest.mark.asyncio
@@ -301,3 +397,41 @@ async def test_manual_workloop_tick_still_runs_one_shot_scan(
     assert ctx.suppress is True
     run_scan.assert_awaited_once_with(ctx)
     send_message.assert_awaited_once_with("!room:test", "🔄 Workloop tick: 2 poke(s) sent.", thread_id=None)
+
+
+@pytest.mark.asyncio
+async def test_auto_poke_messages_use_background_hook_source(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(module, tmp_path, message_sender=message_sender)
+    thread_dir = tmp_path / "threads" / "room_thread"
+    thread_dir.mkdir(parents=True)
+    (thread_dir / "todos.json").write_text(
+        json.dumps(
+            {
+                "room_id": "!room:test",
+                "thread_id": "$thread",
+                "items": [
+                    {
+                        "id": "todo1",
+                        "title": "Ship fix",
+                        "status": "open",
+                        "priority": "high",
+                        "assigned_agent": "worker",
+                        "depends_on": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pokes = await module._run_poke_scan(runtime)
+
+    assert pokes == 1
+    args = message_sender.await_args.args
+    assert args[0] == "!room:test"
+    assert args[1].startswith("@worker workloop resume.")
+    assert args[2] == "$thread"
+    assert args[3] == module._AUTO_POKE_HOOK_SOURCE
+    assert args[4] is None

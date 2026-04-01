@@ -22,7 +22,6 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from mindroom.hooks import (
     AfterResponseContext,
     AgentLifecycleContext,
     EnrichmentItem,
+    HookMessageSender,
     MessageEnrichContext,
     MessageReceivedContext,
     ReactionReceivedContext,
@@ -43,6 +43,7 @@ from mindroom.hooks import (
 logger = logging.getLogger(__name__)
 
 _PLUGIN_NAME = "workloop"
+_AUTO_POKE_HOOK_SOURCE = f"{_PLUGIN_NAME}:auto_poke"
 
 # ══════════════════════════════════════════════════════════════════════
 # Constants
@@ -81,7 +82,7 @@ class AutoPokeRuntime:
     config: Any
     state_root: Path
     logger: Any
-    _message_sender: Callable[..., Awaitable[str | None]]
+    _message_sender: HookMessageSender | None
 
     async def send_message(
         self,
@@ -91,7 +92,10 @@ class AutoPokeRuntime:
         thread_id: str | None = None,
         extra_content: dict[str, Any] | None = None,
     ) -> str | None:
-        return await self._message_sender(room_id, text, thread_id=thread_id, extra_content=extra_content)
+        if self._message_sender is None:
+            self.logger.warning("workloop-auto-poke: send_message called but no sender registered")
+            return None
+        return await self._message_sender(room_id, text, thread_id, _AUTO_POKE_HOOK_SOURCE, extra_content)
 
 
 _AUTO_POKE_TASK: asyncio.Task[None] | None = None
@@ -502,11 +506,25 @@ async def _run_poke_scan(
     return pokes_sent
 
 
+def _parse_poke_interval_seconds(settings: dict[str, Any], runtime_logger: Any) -> int:
+    raw_interval = settings.get("poke_interval_seconds", DEFAULT_POKE_INTERVAL_SECONDS)
+    try:
+        return int(raw_interval)
+    except (TypeError, ValueError):
+        runtime_logger.warning(
+            "workloop-auto-poke: invalid poke_interval_seconds=%r; using default %s",
+            raw_interval,
+            DEFAULT_POKE_INTERVAL_SECONDS,
+        )
+        return DEFAULT_POKE_INTERVAL_SECONDS
+
+
 async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
-    interval = int(runtime.settings.get("poke_interval_seconds", DEFAULT_POKE_INTERVAL_SECONDS))
-    runtime.logger.info("workloop-auto-poke: started with %ss interval", interval)
+    runtime.logger.info("workloop-auto-poke: started")
     try:
         while True:
+            # Read the interval each cycle so a hot-reloaded setting does not leave a stale sleep cadence behind.
+            interval = _parse_poke_interval_seconds(runtime.settings, runtime.logger)
             try:
                 await asyncio.sleep(interval)
                 pokes = await _run_poke_scan(runtime)
@@ -526,7 +544,7 @@ def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
         config=ctx.config,
         state_root=ctx.state_root,
         logger=ctx.logger,
-        _message_sender=ctx.send_message,
+        _message_sender=ctx.message_sender,
     )
 
 
@@ -583,7 +601,8 @@ async def stop_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
     except asyncio.CancelledError:
         pass
     finally:
-        _AUTO_POKE_TASK = None
+        if _AUTO_POKE_TASK is task:
+            _AUTO_POKE_TASK = None
 
 
 # ══════════════════════════════════════════════════════════════════════
