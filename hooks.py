@@ -36,7 +36,6 @@ from mindroom.hooks import (
     MessageEnrichContext,
     MessageReceivedContext,
     ReactionReceivedContext,
-    ScheduleFiredContext,
     hook,
 )
 
@@ -621,15 +620,6 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
     """Handle !todo and !workloop-tick commands."""
     body = ctx.envelope.body.strip()
 
-    if body == "!workloop-tick":
-        ctx.suppress = True
-        pokes = await _run_poke_scan(ctx)
-        _, _, reply_tid = _resolve_scope(ctx.envelope)
-        await ctx.send_message(
-            ctx.envelope.room_id, f"\U0001f504 Workloop tick: {pokes} poke(s) sent.", thread_id=reply_tid
-        )
-        return
-
     if not body.startswith("!todo"):
         return
 
@@ -1014,19 +1004,6 @@ async def track_idle(ctx: AfterResponseContext) -> None:
 # Hook 6: schedule:fired — suppress legacy scheduled heartbeat
 # ══════════════════════════════════════════════════════════════════════
 
-
-@hook(
-    event="schedule:fired",
-    name="workloop-poke",
-    priority=100,
-    timeout_ms=30000,
-)
-async def auto_poke(ctx: ScheduleFiredContext) -> None:
-    """Suppress deprecated scheduled ``!workloop-tick`` heartbeats."""
-    if ctx.message_text.strip() != "!workloop-tick":
-        return
-    ctx.suppress = True
-    logger.warning("workloop-poke: scheduled !workloop-tick is deprecated; background auto-poke loop handles scans")
 
 
 # ══════════════════════════════════════════════════════════════════════
