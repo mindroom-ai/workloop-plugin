@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agno.tools import Toolkit
+from agno.agent import Agent
+from agno.team.team import Team
 
 from mindroom.tool_system.metadata import (
     SetupType,
@@ -30,10 +32,8 @@ from mindroom.tool_system.metadata import (
 )
 from mindroom.tool_system.runtime_context import get_plugin_state_root, get_tool_runtime_context
 
+# Runtime imports needed for Agno toolkit introspection.
 if TYPE_CHECKING:
-    from agno.agent import Agent
-    from agno.team.team import Team
-
     from mindroom.constants import RuntimePaths
 
 logger = logging.getLogger(__name__)
