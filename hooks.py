@@ -78,6 +78,8 @@ _run_poke_scan = _poke._run_poke_scan
 _parse_poke_interval_seconds = _poke._parse_poke_interval_seconds
 _auto_poke_loop = _poke._auto_poke_loop
 _build_auto_poke_runtime = _poke._build_auto_poke_runtime
+_has_pending_schedules = _poke._has_pending_schedules
+_should_poke_agent = _poke._should_poke_agent
 
 start_auto_poke_loop = _poke.start_auto_poke_loop
 stop_auto_poke_loop = _poke.stop_auto_poke_loop
@@ -115,8 +117,10 @@ __all__ = [
     "_read_todos",
     "_resolve_scope",
     "_response_scope_thread_id",
+    "_has_pending_schedules",
     "_run_poke_scan",
     "_sanitize",
+    "_should_poke_agent",
     "_short_id",
     "_thread_key",
     "_todos_path",

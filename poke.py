@@ -43,6 +43,7 @@ def _should_poke_agent(
     stale_busy: int,
     *,
     scope_key: str | None = None,
+    min_idle: int = 0,
 ) -> bool:
     state = _read_agent_state(state_root, agent_name)
 
@@ -54,6 +55,14 @@ def _should_poke_agent(
             continue
         if (now - datetime.fromisoformat(started)).total_seconds() < stale_busy:
             return False  # At least one fresh active run → agent is busy
+
+    # Minimum idle time: don't poke unless the agent has been idle long enough.
+    if min_idle > 0:
+        last_response = state.get("last_response_at")
+        if last_response:
+            resp_time = datetime.fromisoformat(last_response)
+            if (now - resp_time).total_seconds() < min_idle:
+                return False
 
     # Per-scope poke cooldown: each thread has its own cooldown so that
     # poking an agent in one thread does not suppress pokes in other threads.
@@ -108,6 +117,19 @@ def _format_poke_message(
     return "\n".join(lines)
 
 
+async def _has_pending_schedules(ctx: PokeScanContext, room_id: str, thread_id: str | None) -> bool:
+    result = await ctx.query_room_state(room_id, "com.mindroom.scheduled.task")
+    if result is None:
+        return False
+    for _task_id, content in result.items():
+        if content.get("status") != "pending":
+            continue
+        workflow = content.get("workflow") or {}
+        if workflow.get("thread_id") == thread_id:
+            return True
+    return False
+
+
 async def _run_poke_scan(
     ctx: PokeScanContext,
 ) -> int:
@@ -116,6 +138,7 @@ async def _run_poke_scan(
     grace = int(ctx.settings.get("recent_response_grace_seconds", 30))
     stale_busy = int(ctx.settings.get("stale_busy_seconds", 600))
     max_pokes = int(ctx.settings.get("max_pokes_per_tick", 3))
+    min_idle = int(ctx.settings.get("min_idle_before_poke_seconds", 600))
     pokes_sent = 0
     configured_agents = set((ctx.config.agents or {}).keys())
 
@@ -146,8 +169,10 @@ async def _run_poke_scan(
             room_id = thread_state.get("room_id", "")
             if not room_id:
                 continue
+            if await _has_pending_schedules(ctx, room_id, matrix_thread_id):
+                continue
             scope_key = f"{room_id}:{matrix_thread_id or 'main'}"
-            if not _should_poke_agent(ctx.state_root, agent_name, now, cooldown, grace, stale_busy, scope_key=scope_key):
+            if not _should_poke_agent(ctx.state_root, agent_name, now, cooldown, grace, stale_busy, scope_key=scope_key, min_idle=min_idle):
                 continue
             poke_text = _format_poke_message(agent_name, agent_items, items)
             try:
@@ -205,6 +230,7 @@ def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
         state_root=ctx.state_root,
         logger=ctx.logger,
         _message_sender=ctx.message_sender,
+        _room_state_querier=ctx.room_state_querier,
     )
 
 

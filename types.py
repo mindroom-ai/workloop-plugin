@@ -15,7 +15,7 @@ else:
     from typing import Any, Protocol
 
     from mindroom.constants import ROUTER_AGENT_NAME
-    from mindroom.hooks import HookMessageSender
+    from mindroom.hooks import HookMessageSender, HookRoomStateQuerier
 
     LOGGER_NAME = __name__.rsplit(".", 1)[0].removesuffix("_modules") if "." in __name__ else __name__
     logger = logging.getLogger(LOGGER_NAME)
@@ -51,6 +51,13 @@ else:
             trigger_dispatch: bool = False,
         ) -> str | None: ...
 
+        async def query_room_state(
+            self,
+            room_id: str,
+            event_type: str,
+            state_key: str | None = None,
+        ) -> dict[str, Any] | None: ...
+
 
     @dataclass(slots=True)
     class AutoPokeRuntime:
@@ -59,6 +66,7 @@ else:
         state_root: Path
         logger: Any
         _message_sender: HookMessageSender | None
+        _room_state_querier: HookRoomStateQuerier | None
 
         async def send_message(
             self,
@@ -82,3 +90,14 @@ else:
                 _AUTO_POKE_HOOK_SOURCE,
                 resolved_extra_content or None,
             )
+
+        async def query_room_state(
+            self,
+            room_id: str,
+            event_type: str,
+            state_key: str | None = None,
+        ) -> dict[str, Any] | None:
+            if self._room_state_querier is None:
+                self.logger.warning("workloop-auto-poke: query_room_state called but no querier registered")
+                return None
+            return await self._room_state_querier(room_id, event_type, state_key)

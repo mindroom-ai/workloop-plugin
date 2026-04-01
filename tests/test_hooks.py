@@ -6,6 +6,7 @@ import json
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -35,6 +36,7 @@ class LifecycleContextStub:
     send_message: AsyncMock
     message_sender: AsyncMock | None
     entity_name: str
+    room_state_querier: AsyncMock | None = None
 
     @property
     def state_root(self) -> Path:
@@ -63,6 +65,7 @@ class MessageContextStub:
     _state_root: Path
     send_message: AsyncMock
     suppress: bool = False
+    query_room_state: AsyncMock | None = None
 
     @property
     def state_root(self) -> Path:
@@ -97,6 +100,7 @@ def _make_runtime(
     *,
     settings: dict[str, Any] | None = None,
     message_sender: AsyncMock | None = None,
+    room_state_querier: AsyncMock | None = None,
 ):
     return module.AutoPokeRuntime(
         settings=settings or {"poke_interval_seconds": 1},
@@ -104,6 +108,7 @@ def _make_runtime(
         state_root=tmp_path,
         logger=Mock(),
         _message_sender=message_sender or AsyncMock(return_value="$event"),
+        _room_state_querier=room_state_querier,
     )
 
 
@@ -529,3 +534,177 @@ async def test_poke_cooldown_is_per_scope(tmp_path: Path) -> None:
     assert pokes3 == 1
     last_call_thread = message_sender.await_args_list[-1].args[2]
     assert last_call_thread == "$threadC"
+
+
+# -- _has_pending_schedules tests --
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_returns_true_when_matching(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "pending",
+                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+            },
+        }
+
+    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_returns_false_when_no_pending(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "done",
+                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+            },
+        }
+
+    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_returns_false_when_querier_none(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    runtime = _make_runtime(module, tmp_path, room_state_querier=None)
+    result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_thread_mismatch(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "pending",
+                "workflow": {"thread_id": "$otherThread", "room_id": "!room:test"},
+            },
+        }
+
+    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_room_level(tmp_path: Path) -> None:
+    """Pending task with thread_id=None matches a room-level poke (thread_id=None)."""
+    module = _load_hooks_module()
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "pending",
+                "workflow": {"thread_id": None, "room_id": "!room:test"},
+            },
+        }
+
+    runtime = _make_runtime(module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier))
+    result = await module._has_pending_schedules(runtime, "!room:test", None)
+    assert result is True
+
+
+# -- _should_poke_agent min_idle tests --
+
+
+def test_should_poke_agent_respects_min_idle(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+
+    # Agent responded 5 minutes ago, min_idle is 10 minutes → should NOT poke
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "worker.json").write_text(
+        json.dumps({"last_response_at": "2026-03-31T11:55:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600)
+    assert result is False
+
+
+def test_should_poke_agent_min_idle_expired(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+
+    # Agent responded 15 minutes ago, min_idle is 10 minutes → should poke
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "worker.json").write_text(
+        json.dumps({"last_response_at": "2026-03-31T11:45:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600)
+    assert result is True
+
+
+def test_should_poke_agent_min_idle_zero_skips_check(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+
+    # Agent responded 1 minute ago, min_idle=0 (disabled) → should poke (grace=30s already passed)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "worker.json").write_text(
+        json.dumps({"last_response_at": "2026-03-31T11:59:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    result = module._should_poke_agent(tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=0)
+    assert result is True
+
+
+# -- _run_poke_scan skips threads with pending schedules --
+
+
+@pytest.mark.asyncio
+async def test_poke_scan_skips_threads_with_pending_schedules(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "pending",
+                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+            },
+        }
+
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={"poke_interval_seconds": 1, "min_idle_before_poke_seconds": 0},
+        message_sender=message_sender,
+        room_state_querier=AsyncMock(side_effect=fake_querier),
+    )
+
+    item = {
+        "id": "dd44",
+        "title": "Task D",
+        "status": "open",
+        "priority": "medium",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room_threadA", "!room:test", "$threadA", [item])
+    _write_thread_todos(tmp_path, "room_threadB", "!room:test", "$threadB", [item])
+
+    pokes = await module._run_poke_scan(runtime)
+
+    # Only threadB should be poked; threadA has a pending schedule
+    assert pokes == 1
+    assert message_sender.await_args.args[2] == "$threadB"
