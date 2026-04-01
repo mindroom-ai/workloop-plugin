@@ -30,11 +30,11 @@ from mindroom.tool_system.metadata import (
 )
 from mindroom.tool_system.runtime_context import get_plugin_state_root, get_tool_runtime_context
 
-# Runtime imports needed for Agno toolkit introspection
-from agno.agent import Agent
-from agno.team.team import Team
+if TYPE_CHECKING:
+    from agno.agent import Agent
+    from agno.team.team import Team
 
-from mindroom.constants import RuntimePaths
+    from mindroom.constants import RuntimePaths
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +169,9 @@ def _current_scope(runtime_paths: RuntimePaths | None) -> tuple[Path, str, str, 
         msg = "workloop_todo_manager requires an active tool runtime context"
         raise RuntimeError(msg)
     state_root = get_plugin_state_root(_PLUGIN_NAME, runtime_paths=ctx.runtime_paths)
-    # Use thread_id (None for room-level) not resolved_thread_id (which may
-    # be the event's own ID for room-level messages).
-    thread_id = ctx.thread_id or "main"
+    # Agent tool calls must follow the actual response thread target so the
+    # persisted work state lines up with later enrichment and auto-pokes.
+    thread_id = ctx.resolved_thread_id or ctx.thread_id or "main"
     return state_root, ctx.room_id, thread_id, ctx.agent_name
 
 
@@ -232,6 +232,7 @@ class WorkloopTodoManager(Toolkit):
 
         Returns:
             Confirmation with all created item IDs.
+
         """
         state_root, room_id, thread_id, agent_name = _current_scope(self._runtime_paths)
         path = _todos_path(state_root, room_id, thread_id)
@@ -250,7 +251,7 @@ class WorkloopTodoManager(Toolkit):
                 prefix = f"[{p}] "
                 if title.lower().startswith(prefix):
                     priority = p
-                    title = title[len(prefix):]
+                    title = title[len(prefix) :]
                     break
             if title:
                 parsed.append((title, priority))
@@ -310,6 +311,7 @@ class WorkloopTodoManager(Toolkit):
 
         Returns:
             Confirmation message with the new todo's ID.
+
         """
         state_root, room_id, thread_id, agent_name = _current_scope(self._runtime_paths)
         path = _todos_path(state_root, room_id, thread_id)
@@ -386,6 +388,7 @@ class WorkloopTodoManager(Toolkit):
 
         Returns:
             Confirmation message, including any items that became unblocked.
+
         """
         state_root, room_id, thread_id, _ = _current_scope(self._runtime_paths)
         path = _todos_path(state_root, room_id, thread_id)
@@ -423,6 +426,7 @@ class WorkloopTodoManager(Toolkit):
 
         Returns:
             Formatted list of matching todos.
+
         """
         state_root, room_id, thread_id, _ = _current_scope(self._runtime_paths)
         path = _todos_path(state_root, room_id, thread_id)
@@ -453,7 +457,9 @@ class WorkloopTodoManager(Toolkit):
         if blocked:
             result_lines.append("\n**Blocked:**")
             for i in blocked:
-                waiting = [d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES]
+                waiting = [
+                    d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+                ]
                 waiting_str = ", ".join(f"`{d}`" for d in waiting)
                 result_lines.append(f"- `{i['id']}` {i['title']} waiting on {waiting_str}")
 
@@ -488,6 +494,7 @@ class WorkloopTodoManager(Toolkit):
 
         Returns:
             Confirmation with updated todo details.
+
         """
         state_root, room_id, thread_id, _ = _current_scope(self._runtime_paths)
         path = _todos_path(state_root, room_id, thread_id)

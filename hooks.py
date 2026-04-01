@@ -80,6 +80,11 @@ def _resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     return room_id, storage_tid, reply_tid
 
 
+def _response_scope_thread_id(envelope: Any) -> str:
+    """Return the actual response-scope thread key for agent-generated work state."""
+    return envelope.resolved_thread_id or envelope.thread_id or "main"
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -284,7 +289,9 @@ def _format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
     if blocked:
         lines.append("\n**Blocked:**")
         for i in blocked:
-            waiting = [d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES]
+            waiting = [
+                d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+            ]
             waiting_str = ", ".join(f"`{d}`" for d in waiting)
             lines.append(f"{_format_item_line(i)} waiting on {waiting_str}")
 
@@ -322,7 +329,9 @@ def _format_plan(items: list[dict[str, Any]]) -> str:
         deps = item.get("depends_on", [])
         if deps:
             dep_str = " \u2190 " + ", ".join(f"`{d}`" for d in deps)
-        lines.append(f"{mark} {emoji} `{item['id']}` {item['title']} [{item.get('priority', 'medium')}]{assigned}{dep_str}")
+        lines.append(
+            f"{mark} {emoji} `{item['id']}` {item['title']} [{item.get('priority', 'medium')}]{assigned}{dep_str}"
+        )
 
     return "\n".join(lines)
 
@@ -467,7 +476,9 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         ctx.suppress = True
         pokes = await _run_poke_scan(ctx)
         _, _, reply_tid = _resolve_scope(ctx.envelope)
-        await ctx.send_message(ctx.envelope.room_id, f"\U0001f504 Workloop tick: {pokes} poke(s) sent.", thread_id=reply_tid)
+        await ctx.send_message(
+            ctx.envelope.room_id, f"\U0001f504 Workloop tick: {pokes} poke(s) sent.", thread_id=reply_tid
+        )
         return
 
     if not body.startswith("!todo"):
@@ -686,7 +697,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             prefix = f"[{p}] "
             if title.lower().startswith(prefix):
                 priority = p
-                title = title[len(prefix):]
+                title = title[len(prefix) :]
                 break
 
         def create_item(data: dict[str, Any]) -> dict[str, Any]:
@@ -719,6 +730,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
         )
         event_id = await ctx.send_message(room_id, msg, thread_id=reply_tid)
         if event_id:
+
             def save_event_id(data: dict[str, Any]) -> None:
                 for item in data.get("items", []):
                     if item["id"] == new_item["id"]:
@@ -749,11 +761,12 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
     """Inject thread work plan and mark target agent busy."""
     agent_name = ctx.target_entity_name
     room_id = ctx.envelope.room_id
-    thread_id = ctx.envelope.thread_id  # None for room-level, set for threads
+    thread_id = _response_scope_thread_id(ctx.envelope)
 
     # Mark agent as busy for this scope
-    run_key = f"{room_id}:{thread_id or 'main'}"
+    run_key = f"{room_id}:{thread_id}"
     try:
+
         def _add_active_run(data: dict[str, Any]) -> None:
             data.setdefault("active_runs", {})[run_key] = {"started_at": _now_iso()}
 
@@ -797,7 +810,9 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
     if blocked:
         lines.append("\nBlocked:")
         for i in blocked[:max_items]:
-            waiting = [d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES]
+            waiting = [
+                d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
+            ]
             waiting_str = ", ".join(f"`{d}`" for d in waiting)
             lines.append(f"- `{i['id']}` {i['title']} [{i.get('priority', 'medium')}] waiting on {waiting_str}")
         if len(blocked) > max_items:
@@ -830,9 +845,10 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     """Remove the active run for this scope and record last response time."""
     agent_name = ctx.result.envelope.agent_name
     room_id = ctx.result.envelope.room_id
-    thread_id = ctx.result.envelope.thread_id
-    run_key = f"{room_id}:{thread_id or 'main'}"
+    thread_id = _response_scope_thread_id(ctx.result.envelope)
+    run_key = f"{room_id}:{thread_id}"
     try:
+
         def _remove_active_run(data: dict[str, Any]) -> None:
             active_runs = data.get("active_runs", {})
             active_runs.pop(run_key, None)
