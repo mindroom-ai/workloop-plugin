@@ -5,27 +5,33 @@ and hook logic are in one module to avoid relative-import issues with MindRoom's
 plugin loader (which uses ``spec_from_file_location``).
 
 Provides:
+- ``workloop-auto-poke-start`` (agent:started): start the router-owned auto-poke loop
+- ``workloop-auto-poke-stop`` (agent:stopped): stop the router-owned auto-poke loop
 - ``workloop-command`` (message:received): ``!todo`` and ``!workloop-tick`` commands
 - ``workloop-context`` (message:enrich): inject thread work plan + mark agent busy
 - ``workloop-track-idle`` (message:after_response): mark agent idle
-- ``workloop-poke`` (schedule:fired): auto-poke idle agents with unblocked work
+- ``workloop-poke`` (schedule:fired): suppress deprecated scheduled ``!workloop-tick``
 - ``workloop-react`` (reaction:received): complete/cancel via reactions
 """
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from mindroom.constants import ROUTER_AGENT_NAME
 from mindroom.hooks import (
     AfterResponseContext,
+    AgentLifecycleContext,
     EnrichmentItem,
     MessageEnrichContext,
     MessageReceivedContext,
@@ -35,6 +41,8 @@ from mindroom.hooks import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PLUGIN_NAME = "workloop"
 
 # ══════════════════════════════════════════════════════════════════════
 # Constants
@@ -49,6 +57,44 @@ PRIORITY_EMOJI: dict[str, str] = {
     "low": "\U0001f7e2",
 }
 PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+DEFAULT_POKE_INTERVAL_SECONDS = 120
+
+
+class PokeScanContext(Protocol):
+    settings: dict[str, Any]
+    config: Any
+    state_root: Path
+
+    async def send_message(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        thread_id: str | None = None,
+        extra_content: dict[str, Any] | None = None,
+    ) -> str | None: ...
+
+
+@dataclass(slots=True)
+class AutoPokeRuntime:
+    settings: dict[str, Any]
+    config: Any
+    state_root: Path
+    logger: Any
+    _message_sender: Callable[..., Awaitable[str | None]]
+
+    async def send_message(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        thread_id: str | None = None,
+        extra_content: dict[str, Any] | None = None,
+    ) -> str | None:
+        return await self._message_sender(room_id, text, thread_id=thread_id, extra_content=extra_content)
+
+
+_AUTO_POKE_TASK: asyncio.Task[None] | None = None
 
 # ══════════════════════════════════════════════════════════════════════
 # Helpers: thread key, sanitization, timestamps
@@ -405,7 +451,7 @@ def _format_poke_message(
 
 
 async def _run_poke_scan(
-    ctx: ScheduleFiredContext | MessageReceivedContext,
+    ctx: PokeScanContext,
 ) -> int:
     now = datetime.now(UTC)
     cooldown = int(ctx.settings.get("poke_cooldown_seconds", 300))
@@ -456,8 +502,92 @@ async def _run_poke_scan(
     return pokes_sent
 
 
+async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
+    interval = int(runtime.settings.get("poke_interval_seconds", DEFAULT_POKE_INTERVAL_SECONDS))
+    runtime.logger.info("workloop-auto-poke: started with %ss interval", interval)
+    try:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                pokes = await _run_poke_scan(runtime)
+                runtime.logger.info("workloop-auto-poke: scan complete, %d poke(s) sent", pokes)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                runtime.logger.exception("workloop-auto-poke: scan failed; continuing")
+    except asyncio.CancelledError:
+        runtime.logger.info("workloop-auto-poke: stopped")
+        raise
+
+
+def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
+    return AutoPokeRuntime(
+        settings=ctx.settings,
+        config=ctx.config,
+        state_root=ctx.state_root,
+        logger=ctx.logger,
+        _message_sender=ctx.send_message,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
-# Hook 1: !todo command handler (message:received, router only)
+# Hook 1: agent:started — start auto-poke loop (router only)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@hook(
+    event="agent:started",
+    name="workloop-auto-poke-start",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)
+async def start_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
+    """Start the background auto-poke loop once per router lifecycle."""
+    global _AUTO_POKE_TASK
+
+    if ctx.entity_name != ROUTER_AGENT_NAME:
+        return
+    if _AUTO_POKE_TASK is not None and not _AUTO_POKE_TASK.done():
+        return
+
+    runtime = _build_auto_poke_runtime(ctx)
+    _AUTO_POKE_TASK = asyncio.create_task(_auto_poke_loop(runtime), name=f"{_PLUGIN_NAME}-auto-poke")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Hook 2: agent:stopped — stop auto-poke loop (router only)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@hook(
+    event="agent:stopped",
+    name="workloop-auto-poke-stop",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)
+async def stop_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
+    """Cancel the background auto-poke loop when the router stops."""
+    global _AUTO_POKE_TASK
+
+    if ctx.entity_name != ROUTER_AGENT_NAME:
+        return
+    task = _AUTO_POKE_TASK
+    if task is None:
+        return
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _AUTO_POKE_TASK = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Hook 3: !todo command handler (message:received, router only)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -748,7 +878,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Hook 2: message:enrich — inject thread work plan + mark busy
+# Hook 4: message:enrich — inject thread work plan + mark busy
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -831,7 +961,7 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Hook 3: message:after_response — mark agent idle
+# Hook 5: message:after_response — mark agent idle
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -862,7 +992,7 @@ async def track_idle(ctx: AfterResponseContext) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Hook 4: schedule:fired — auto-poke heartbeat
+# Hook 6: schedule:fired — suppress legacy scheduled heartbeat
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -873,16 +1003,15 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     timeout_ms=30000,
 )
 async def auto_poke(ctx: ScheduleFiredContext) -> None:
-    """Auto-poke idle agents when triggered by ``!workloop-tick``."""
+    """Suppress deprecated scheduled ``!workloop-tick`` heartbeats."""
     if ctx.message_text.strip() != "!workloop-tick":
         return
     ctx.suppress = True
-    pokes = await _run_poke_scan(ctx)
-    logger.info("workloop-poke: tick complete, %d poke(s) sent", pokes)
+    logger.warning("workloop-poke: scheduled !workloop-tick is deprecated; background auto-poke loop handles scans")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Hook 5: reaction:received — quick completion via reactions
+# Hook 7: reaction:received — quick completion via reactions
 # ══════════════════════════════════════════════════════════════════════
 
 

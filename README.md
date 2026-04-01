@@ -14,7 +14,7 @@ With workloop: the agent creates a plan, works through it, and the system keeps 
 - **Dependencies** — todos can depend on other todos; blocked items are computed at read time
 - **Priority levels** — critical, high, medium, low with emoji indicators
 - **Agent idle detection** — tracks busy/idle state via `message:received` and `message:after_response` hooks
-- **Auto-poke** — a scheduled task periodically nudges idle agents that have unblocked work
+- **Auto-poke** — a background loop periodically nudges idle agents that have unblocked work
 - **Context injection** — the `message:enrich` hook injects the thread checklist into agent context every turn
 - **Reaction-based completion** — react ✅ to complete a todo, ❌ to cancel it
 - **Filesystem-only storage** — JSON files with `fcntl` locks, no database, fully transparent
@@ -40,12 +40,6 @@ agents:
 
 3. Restart MindRoom.
 
-4. Set up the auto-poke timer (one-time):
-
-```
-Use the schedule tool: schedule("every 5 minutes say !workloop-tick", new_thread=true)
-```
-
 ## Usage
 
 ### Chat commands
@@ -59,6 +53,7 @@ Use the schedule tool: schedule("every 5 minutes say !workloop-tick", new_thread
 !todo rm <id>                 # Delete a todo permanently
 !todo detail <id>             # Show full details
 !todo help                    # Show usage
+!workloop-tick                # Run one diagnostic poke scan now
 ```
 
 ### Agent tools
@@ -73,17 +68,23 @@ Agents get a `WorkloopTodoManager` toolkit with:
 
 ### How the auto-poke loop works
 
+The plugin starts one router-owned background task on `agent:started`.
+The first scan runs after `poke_interval_seconds`.
+The loop replaces the old scheduled `!workloop-tick` heartbeat.
+Manual `!workloop-tick` still works as a one-shot diagnostic command.
+If you still have an old scheduled `!workloop-tick`, the plugin suppresses it and logs a deprecation warning.
+
 ```
 You:     "Build monitoring"
 Agent:   [creates plan, works on step 1, completes it]
          [goes idle]
 
-         5 minutes pass...
+         2 minutes pass...
 
 System:  You have unblocked work: Configure alerting
 Agent:   [picks it up, works, completes]
 
-         5 minutes pass...
+         2 minutes pass...
 
 System:  You have unblocked work: Write tests
 Agent:   [works, completes]
@@ -96,10 +97,12 @@ Agent:   [works, completes]
 
 | Hook | Event | Purpose |
 |------|-------|---------|
+| `workloop-auto-poke-start` | `agent:started` | Start the router-owned auto-poke loop |
+| `workloop-auto-poke-stop` | `agent:stopped` | Stop the router-owned auto-poke loop |
 | `workloop_command` | `message:received` | Handle `!todo` commands |
 | `inject_todos` | `message:enrich` | Inject checklist into agent context |
 | `track_idle` | `message:after_response` | Record when agent finishes |
-| `auto_poke` | `schedule:fired` | Nudge idle agents with unblocked work |
+| `auto_poke` | `schedule:fired` | Suppress deprecated scheduled `!workloop-tick` heartbeats |
 | `workloop_react` | `reaction:received` | Reactions complete/cancel todos |
 
 ### Storage
@@ -125,11 +128,26 @@ Stale entries (from crashes where `after_response` never fired) are auto-pruned 
 
 ## Configuration
 
-Tunable constants in `hooks.py`:
+Configure plugin settings under the plugin entry in `config.yaml`.
 
-- `POKE_COOLDOWN_SECONDS` — minimum time between pokes (default: 300)
-- `STALE_BUSY_SECONDS` — auto-prune busy entries older than this (default: 600)
-- `MAX_POKES_PER_TICK` — max agents to poke per tick (default: 3)
+```yaml
+plugins:
+  - path: plugins/workloop
+    settings:
+      poke_interval_seconds: 120
+      poke_cooldown_seconds: 300
+      recent_response_grace_seconds: 30
+      stale_busy_seconds: 600
+      max_pokes_per_tick: 3
+```
+
+Available settings:
+
+- `poke_interval_seconds` — seconds between automatic scan attempts (default: 120)
+- `poke_cooldown_seconds` — minimum time between pokes for the same agent (default: 300)
+- `recent_response_grace_seconds` — grace period after an agent response before it can be poked again (default: 30)
+- `stale_busy_seconds` — auto-prune busy entries older than this (default: 600)
+- `max_pokes_per_tick` — max agents to poke per scan (default: 3)
 
 ## License
 
