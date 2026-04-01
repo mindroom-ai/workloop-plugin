@@ -435,3 +435,97 @@ async def test_auto_poke_messages_use_background_hook_source(tmp_path: Path) -> 
     assert args[2] == "$thread"
     assert args[3] == module._AUTO_POKE_HOOK_SOURCE
     assert args[4] is None
+
+
+def _write_thread_todos(
+    tmp_path: Path,
+    dir_name: str,
+    room_id: str,
+    thread_id: str,
+    items: list[dict[str, Any]],
+) -> None:
+    thread_dir = tmp_path / "threads" / dir_name
+    thread_dir.mkdir(parents=True, exist_ok=True)
+    (thread_dir / "todos.json").write_text(
+        json.dumps({"room_id": room_id, "thread_id": thread_id, "items": items}),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_poke_scan_fires_in_multiple_threads_for_same_agent(tmp_path: Path) -> None:
+    """An agent with actionable items in two different threads gets poked in both."""
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={"poke_interval_seconds": 1, "poke_cooldown_seconds": 300},
+        message_sender=message_sender,
+    )
+
+    item_a = {
+        "id": "aa11",
+        "title": "Task A",
+        "status": "open",
+        "priority": "medium",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+    item_b = {
+        "id": "bb22",
+        "title": "Task B",
+        "status": "open",
+        "priority": "medium",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room_threadA", "!room:test", "$threadA", [item_a])
+    _write_thread_todos(tmp_path, "room_threadB", "!room:test", "$threadB", [item_b])
+
+    pokes = await module._run_poke_scan(runtime)
+
+    assert pokes == 2
+    thread_ids = sorted(call.args[2] for call in message_sender.await_args_list)
+    assert thread_ids == ["$threadA", "$threadB"]
+
+
+@pytest.mark.asyncio
+async def test_poke_cooldown_is_per_scope(tmp_path: Path) -> None:
+    """After poking in one thread, the same thread is on cooldown but a different thread is not."""
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={"poke_interval_seconds": 1, "poke_cooldown_seconds": 300},
+        message_sender=message_sender,
+    )
+
+    item = {
+        "id": "cc33",
+        "title": "Task C",
+        "status": "open",
+        "priority": "medium",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room_threadA", "!room:test", "$threadA", [item])
+    _write_thread_todos(tmp_path, "room_threadB", "!room:test", "$threadB", [item])
+
+    # First scan pokes both threads
+    pokes1 = await module._run_poke_scan(runtime)
+    assert pokes1 == 2
+
+    # Second scan — both on cooldown, zero pokes
+    pokes2 = await module._run_poke_scan(runtime)
+    assert pokes2 == 0
+
+    # Add a third thread — only the new thread should be poked
+    _write_thread_todos(tmp_path, "room_threadC", "!room:test", "$threadC", [item])
+    pokes3 = await module._run_poke_scan(runtime)
+    assert pokes3 == 1
+    last_call_thread = message_sender.await_args_list[-1].args[2]
+    assert last_call_thread == "$threadC"

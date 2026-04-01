@@ -10,7 +10,6 @@ Provides:
 - ``workloop-command`` (message:received): ``!todo`` and ``!workloop-tick`` commands
 - ``workloop-context`` (message:enrich): inject thread work plan + mark agent busy
 - ``workloop-track-idle`` (message:after_response): mark agent idle
-- ``workloop-poke`` (schedule:fired): suppress deprecated scheduled ``!workloop-tick``
 - ``workloop-react`` (reaction:received): complete/cancel via reactions
 """
 
@@ -299,6 +298,24 @@ def _update_agent_state(state_root: Path, agent_name: str, updates: dict[str, An
     _locked_update_json(path, mutate)
 
 
+def _poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: datetime) -> None:
+    """Record a poke timestamp for a specific thread scope."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        if not data:
+            data["agent_name"] = agent_name
+            data["active_runs"] = {}
+            data["last_response_at"] = None
+            data["last_poked_at"] = None
+        poked_scopes: dict[str, str] = data.setdefault("poked_scopes", {})
+        poked_scopes[scope_key] = now.isoformat()
+        # Also set legacy field for backward compat
+        data["last_poked_at"] = now.isoformat()
+
+    path = _agent_state_path(state_root, agent_name)
+    _locked_update_json(path, mutate)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Helpers: formatting
 # ══════════════════════════════════════════════════════════════════════
@@ -397,6 +414,8 @@ def _should_poke_agent(
     cooldown: int,
     grace: int,
     stale_busy: int,
+    *,
+    scope_key: str | None = None,
 ) -> bool:
     state = _read_agent_state(state_root, agent_name)
 
@@ -409,11 +428,20 @@ def _should_poke_agent(
         if (now - datetime.fromisoformat(started)).total_seconds() < stale_busy:
             return False  # At least one fresh active run → agent is busy
 
-    last_poked = state.get("last_poked_at")
-    if last_poked:
-        poked_time = datetime.fromisoformat(last_poked)
+    # Per-scope poke cooldown: each thread has its own cooldown so that
+    # poking an agent in one thread does not suppress pokes in other threads.
+    poked_scopes: dict[str, str] = state.get("poked_scopes", {})
+    if scope_key and scope_key in poked_scopes:
+        poked_time = datetime.fromisoformat(poked_scopes[scope_key])
         if (now - poked_time).total_seconds() < cooldown:
             return False
+    elif not scope_key:
+        # Legacy fallback for callers that don't provide scope_key
+        last_poked = state.get("last_poked_at")
+        if last_poked:
+            poked_time = datetime.fromisoformat(last_poked)
+            if (now - poked_time).total_seconds() < cooldown:
+                return False
 
     last_response = state.get("last_response_at")
     if last_response:
@@ -487,16 +515,17 @@ async def _run_poke_scan(
                 break
             if agent_name not in configured_agents:
                 continue
-            if not _should_poke_agent(ctx.state_root, agent_name, now, cooldown, grace, stale_busy):
-                continue
-            poke_text = _format_poke_message(agent_name, agent_items, items)
             matrix_thread_id = None if thread_state.get("thread_id") == "main" else thread_state.get("thread_id")
             room_id = thread_state.get("room_id", "")
             if not room_id:
                 continue
+            scope_key = f"{room_id}:{matrix_thread_id or 'main'}"
+            if not _should_poke_agent(ctx.state_root, agent_name, now, cooldown, grace, stale_busy, scope_key=scope_key):
+                continue
+            poke_text = _format_poke_message(agent_name, agent_items, items)
             try:
                 await ctx.send_message(room_id, poke_text, thread_id=matrix_thread_id)
-                _update_agent_state(ctx.state_root, agent_name, {"last_poked_at": now.isoformat()})
+                _poke_agent_scope(ctx.state_root, agent_name, scope_key, now)
                 pokes_sent += 1
                 logger.info("workloop-poke: poked %s in room %s thread %s", agent_name, room_id, matrix_thread_id)
             except Exception:
@@ -1003,7 +1032,6 @@ async def track_idle(ctx: AfterResponseContext) -> None:
 # ══════════════════════════════════════════════════════════════════════
 # Hook 6: schedule:fired — suppress legacy scheduled heartbeat
 # ══════════════════════════════════════════════════════════════════════
-
 
 
 # ══════════════════════════════════════════════════════════════════════
