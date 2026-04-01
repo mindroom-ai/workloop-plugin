@@ -10,15 +10,15 @@ from typing import Any
 from mindroom.hooks import AfterResponseContext, AgentLifecycleContext, EnrichmentItem, MessageEnrichContext, hook
 
 from .state import (
-    _agent_state_path,
-    _locked_update_json,
-    _now_iso,
-    _poke_agent_scope,
-    _read_agent_state,
-    _response_scope_thread_id,
-    _todos_path,
+    agent_state_path,
+    locked_update_json,
+    now_iso,
+    poke_agent_scope,
+    read_agent_state,
+    response_scope_thread_id,
+    todos_path,
 )
-from .todos import _read_todos, is_actionable, is_blocked
+from .todos import is_actionable, is_blocked, read_todos
 from .types import (
     AutoPokeRuntime,
     DEFAULT_POKE_INTERVAL_SECONDS,
@@ -45,7 +45,7 @@ def _should_poke_agent(
     scope_key: str | None = None,
     min_idle: int = 0,
 ) -> bool:
-    state = _read_agent_state(state_root, agent_name)
+    state = read_agent_state(state_root, agent_name)
 
     # Check active runs — agent is busy if any non-stale runs exist
     active_runs: dict[str, Any] = state.get("active_runs", {})
@@ -150,7 +150,7 @@ async def _run_poke_scan(
         if pokes_sent >= max_pokes:
             break
         try:
-            thread_state = _read_todos(todos_path)
+            thread_state = read_todos(todos_path)
         except Exception:
             logger.exception("workloop-poke: failed to read %s", todos_path)
             continue
@@ -182,7 +182,7 @@ async def _run_poke_scan(
                     thread_id=matrix_thread_id,
                     trigger_dispatch=True,
                 )
-                _poke_agent_scope(ctx.state_root, agent_name, scope_key, now)
+                poke_agent_scope(ctx.state_root, agent_name, scope_key, now)
                 pokes_sent += 1
                 logger.info("workloop-poke: poked %s in room %s thread %s", agent_name, room_id, matrix_thread_id)
             except Exception:
@@ -290,24 +290,24 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
     """Inject thread work plan and mark target agent busy."""
     agent_name = ctx.target_entity_name
     room_id = ctx.envelope.room_id
-    thread_id = _response_scope_thread_id(ctx.envelope)
+    thread_id = response_scope_thread_id(ctx.envelope)
 
     # Mark agent as busy for this scope
     run_key = f"{room_id}:{thread_id}"
     try:
 
         def _add_active_run(data: dict[str, Any]) -> None:
-            data.setdefault("active_runs", {})[run_key] = {"started_at": _now_iso()}
+            data.setdefault("active_runs", {})[run_key] = {"started_at": now_iso()}
 
-        path = _agent_state_path(ctx.state_root, agent_name)
-        _locked_update_json(path, _add_active_run)
+        path = agent_state_path(ctx.state_root, agent_name)
+        locked_update_json(path, _add_active_run)
     except Exception:
         logger.exception("workloop-context: failed to update agent state for %s", agent_name)
 
     # Load thread plan
-    path = _todos_path(ctx.state_root, room_id, thread_id)
+    path = todos_path(ctx.state_root, room_id, thread_id)
     try:
-        state = _read_todos(path)
+        state = read_todos(path)
     except Exception:
         logger.exception("workloop-context: failed to load todos")
         return []
@@ -369,7 +369,7 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     """Remove the active run for this scope and record last response time."""
     agent_name = ctx.result.envelope.agent_name
     room_id = ctx.result.envelope.room_id
-    thread_id = _response_scope_thread_id(ctx.result.envelope)
+    thread_id = response_scope_thread_id(ctx.result.envelope)
     run_key = f"{room_id}:{thread_id}"
     try:
 
@@ -377,9 +377,9 @@ async def track_idle(ctx: AfterResponseContext) -> None:
             active_runs = data.get("active_runs", {})
             active_runs.pop(run_key, None)
             data["active_runs"] = active_runs
-            data["last_response_at"] = _now_iso()
+            data["last_response_at"] = now_iso()
 
-        path = _agent_state_path(ctx.state_root, agent_name)
-        _locked_update_json(path, _remove_active_run)
+        path = agent_state_path(ctx.state_root, agent_name)
+        locked_update_json(path, _remove_active_run)
     except Exception:
         logger.exception("workloop-track-idle: failed to update agent state for %s", agent_name)

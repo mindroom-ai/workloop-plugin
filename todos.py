@@ -7,25 +7,25 @@ from typing import Any
 
 from mindroom.hooks import ReactionReceivedContext, hook
 
-from .state import _locked_update_json, _now_iso, _read_json
+from .state import locked_update_json, now_iso, read_json
 from .types import TERMINAL_STATUSES, logger
 
 
-def _read_todos(path: Path) -> dict[str, Any]:
-    data = _read_json(path)
+def read_todos(path: Path) -> dict[str, Any]:
+    data = read_json(path)
     if not data:
-        return {"room_id": "", "thread_id": "main", "created_at": _now_iso(), "updated_at": _now_iso(), "items": []}
+        return {"room_id": "", "thread_id": "main", "created_at": now_iso(), "updated_at": now_iso(), "items": []}
     return data
 
 
-def _ensure_thread_state(data: dict[str, Any], room_id: str, thread_id: str | None) -> None:
+def ensure_thread_state(data: dict[str, Any], room_id: str, thread_id: str | None) -> None:
     """Ensure data dict has the required top-level fields."""
     resolved = thread_id or "main"
     if "items" not in data:
         data["room_id"] = room_id
         data["thread_id"] = resolved
-        data["created_at"] = _now_iso()
-        data["updated_at"] = _now_iso()
+        data["created_at"] = now_iso()
+        data["updated_at"] = now_iso()
         data["items"] = []
 
 
@@ -43,7 +43,7 @@ def is_actionable(item: dict[str, Any], items_by_id: dict[str, dict[str, Any]]) 
     return item["status"] == "open" and not is_blocked(item, items_by_id)
 
 
-def _would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str) -> bool:
+def would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, new_dep_id: str) -> bool:
     stack = [new_dep_id]
     seen: set[str] = set()
     while stack:
@@ -59,7 +59,7 @@ def _would_create_cycle(items_by_id: dict[str, dict[str, Any]], item_id: str, ne
     return False
 
 
-def _newly_unblocked(items: list[dict[str, Any]], changed_id: str) -> list[dict[str, Any]]:
+def newly_unblocked(items: list[dict[str, Any]], changed_id: str) -> list[dict[str, Any]]:
     items_by_id = {item["id"]: item for item in items}
     unblocked: list[dict[str, Any]] = []
     for item in items:
@@ -93,7 +93,7 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
 
     for todos_path in threads_dir.glob("*/todos.json"):
         try:
-            state = _read_todos(todos_path)
+            state = read_todos(todos_path)
         except Exception:
             continue
 
@@ -117,11 +117,11 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
                     if item["status"] in TERMINAL_STATUSES:
                         return None
                     item["status"] = new_status
-                    item["updated_at"] = _now_iso()
+                    item["updated_at"] = now_iso()
                     if new_status == "done":
-                        item["completed_at"] = _now_iso()
-                    data["updated_at"] = _now_iso()
-                    unblocked = _newly_unblocked(data["items"], item["id"])
+                        item["completed_at"] = now_iso()
+                    data["updated_at"] = now_iso()
+                    unblocked = newly_unblocked(data["items"], item["id"])
                     if new_status == "done":
                         msg = f"\u2705 Completed: **{item['title']}**"
                     else:
@@ -133,7 +133,7 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
             return None
 
         try:
-            result = _locked_update_json(todos_path, react_update)
+            result = locked_update_json(todos_path, react_update)
             if result:
                 matrix_thread_id = None if state.get("thread_id") == "main" else state.get("thread_id")
                 await ctx.send_message(ctx.room_id, result, thread_id=matrix_thread_id)
@@ -141,3 +141,10 @@ async def workloop_react(ctx: ReactionReceivedContext) -> None:
         except Exception:
             logger.exception("workloop-react: error handling reaction")
         return
+
+
+# Backward-compatible aliases for older imports.
+_read_todos = read_todos
+_ensure_thread_state = ensure_thread_state
+_would_create_cycle = would_create_cycle
+_newly_unblocked = newly_unblocked

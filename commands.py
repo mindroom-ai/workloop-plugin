@@ -6,9 +6,9 @@ from typing import Any
 
 from mindroom.hooks import MessageReceivedContext, hook
 
-from .formatting import _format_list, _format_plan
-from .state import _locked_update_json, _now_iso, _resolve_scope, _short_id, _todos_path
-from .todos import _ensure_thread_state, _newly_unblocked, _read_todos, _would_create_cycle
+from .formatting import format_list, format_plan
+from .state import locked_update_json, now_iso, resolve_scope, short_id, todos_path
+from .todos import ensure_thread_state, newly_unblocked, read_todos, would_create_cycle
 from .types import PRIORITY_EMOJI, ROUTER_AGENT_NAME, TERMINAL_STATUSES, VALID_PRIORITIES, logger
 
 
@@ -20,13 +20,13 @@ from .types import PRIORITY_EMOJI, ROUTER_AGENT_NAME, TERMINAL_STATUSES, VALID_P
     timeout_ms=15000,
 )
 async def workloop_command(ctx: MessageReceivedContext) -> None:
-    """Handle !todo and !workloop-tick commands."""
+    """Handle `!todo` commands."""
     body = ctx.envelope.body.strip()
 
     if not body.startswith("!todo"):
         return
 
-    room_id, thread_id, reply_tid = _resolve_scope(ctx.envelope)
+    room_id, thread_id, reply_tid = resolve_scope(ctx.envelope)
     parts = body[5:].strip()
 
     try:
@@ -51,26 +51,26 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             ctx.suppress = True
             return
 
-        path = _todos_path(ctx.state_root, room_id, thread_id)
+        path = todos_path(ctx.state_root, room_id, thread_id)
 
         # !todo list
         if parts == "list":
-            state = _read_todos(path)
-            await ctx.send_message(room_id, _format_list(state["items"]), thread_id=reply_tid)
+            state = read_todos(path)
+            await ctx.send_message(room_id, format_list(state["items"]), thread_id=reply_tid)
             ctx.suppress = True
             return
 
         # !todo all
         if parts == "all":
-            state = _read_todos(path)
-            await ctx.send_message(room_id, _format_list(state["items"], show_all=True), thread_id=reply_tid)
+            state = read_todos(path)
+            await ctx.send_message(room_id, format_list(state["items"], show_all=True), thread_id=reply_tid)
             ctx.suppress = True
             return
 
         # !todo plan
         if parts == "plan":
-            state = _read_todos(path)
-            await ctx.send_message(room_id, _format_plan(state["items"]), thread_id=reply_tid)
+            state = read_todos(path)
+            await ctx.send_message(room_id, format_plan(state["items"]), thread_id=reply_tid)
             ctx.suppress = True
             return
 
@@ -79,16 +79,16 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             todo_id = parts[5:].strip()
 
             def mark_done(data: dict[str, Any]) -> str:
-                _ensure_thread_state(data, room_id, thread_id)
+                ensure_thread_state(data, room_id, thread_id)
                 for item in data["items"]:
                     if item["id"] == todo_id:
                         if item["status"] in TERMINAL_STATUSES:
                             return f"Item `{todo_id}` is already {item['status']}."
                         item["status"] = "done"
-                        item["completed_at"] = _now_iso()
-                        item["updated_at"] = _now_iso()
-                        data["updated_at"] = _now_iso()
-                        unblocked = _newly_unblocked(data["items"], todo_id)
+                        item["completed_at"] = now_iso()
+                        item["updated_at"] = now_iso()
+                        data["updated_at"] = now_iso()
+                        unblocked = newly_unblocked(data["items"], todo_id)
                         msg = f"\u2705 Completed: **{item['title']}** (`{todo_id}`)"
                         if unblocked:
                             names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
@@ -96,7 +96,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         return msg
                 return f"\u274c Todo `{todo_id}` not found."
 
-            result = _locked_update_json(path, mark_done)
+            result = locked_update_json(path, mark_done)
             await ctx.send_message(room_id, result, thread_id=reply_tid)
             ctx.suppress = True
             return
@@ -106,15 +106,15 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             todo_id = parts[7:].strip()
 
             def mark_cancel(data: dict[str, Any]) -> str:
-                _ensure_thread_state(data, room_id, thread_id)
+                ensure_thread_state(data, room_id, thread_id)
                 for item in data["items"]:
                     if item["id"] == todo_id:
                         if item["status"] in TERMINAL_STATUSES:
                             return f"Item `{todo_id}` is already {item['status']}."
                         item["status"] = "cancelled"
-                        item["updated_at"] = _now_iso()
-                        data["updated_at"] = _now_iso()
-                        unblocked = _newly_unblocked(data["items"], todo_id)
+                        item["updated_at"] = now_iso()
+                        data["updated_at"] = now_iso()
+                        unblocked = newly_unblocked(data["items"], todo_id)
                         msg = f"\u274c Cancelled: **{item['title']}** (`{todo_id}`)"
                         if unblocked:
                             names = ", ".join(f"`{u['id']}` {u['title']}" for u in unblocked)
@@ -122,7 +122,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         return msg
                 return f"\u274c Todo `{todo_id}` not found."
 
-            result = _locked_update_json(path, mark_cancel)
+            result = locked_update_json(path, mark_cancel)
             await ctx.send_message(room_id, result, thread_id=reply_tid)
             ctx.suppress = True
             return
@@ -132,7 +132,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             todo_id = parts[3:].strip()
 
             def remove(data: dict[str, Any]) -> str:
-                _ensure_thread_state(data, room_id, thread_id)
+                ensure_thread_state(data, room_id, thread_id)
                 original_len = len(data["items"])
                 data["items"] = [i for i in data["items"] if i["id"] != todo_id]
                 if len(data["items"]) == original_len:
@@ -140,10 +140,10 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                 for item in data["items"]:
                     if todo_id in item.get("depends_on", []):
                         item["depends_on"].remove(todo_id)
-                data["updated_at"] = _now_iso()
+                data["updated_at"] = now_iso()
                 return f"\U0001f5d1\ufe0f Deleted todo `{todo_id}`."
 
-            result = _locked_update_json(path, remove)
+            result = locked_update_json(path, remove)
             await ctx.send_message(room_id, result, thread_id=reply_tid)
             ctx.suppress = True
             return
@@ -158,7 +158,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             item_id, dep_id = dep_parts
 
             def add_dep(data: dict[str, Any]) -> str:
-                _ensure_thread_state(data, room_id, thread_id)
+                ensure_thread_state(data, room_id, thread_id)
                 items_by_id = {i["id"]: i for i in data["items"]}
                 if item_id not in items_by_id:
                     return f"\u274c Todo `{item_id}` not found."
@@ -168,14 +168,14 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                     return "\u274c Cannot depend on itself."
                 if dep_id in items_by_id[item_id].get("depends_on", []):
                     return f"Item `{item_id}` already depends on `{dep_id}`."
-                if _would_create_cycle(items_by_id, item_id, dep_id):
+                if would_create_cycle(items_by_id, item_id, dep_id):
                     return "\u274c Adding this dependency would create a cycle."
                 items_by_id[item_id].setdefault("depends_on", []).append(dep_id)
-                items_by_id[item_id]["updated_at"] = _now_iso()
-                data["updated_at"] = _now_iso()
+                items_by_id[item_id]["updated_at"] = now_iso()
+                data["updated_at"] = now_iso()
                 return f"\U0001f517 `{item_id}` now depends on `{dep_id}`."
 
-            result = _locked_update_json(path, add_dep)
+            result = locked_update_json(path, add_dep)
             await ctx.send_message(room_id, result, thread_id=reply_tid)
             ctx.suppress = True
             return
@@ -201,16 +201,16 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                 return
 
             def do_assign(data: dict[str, Any]) -> str:
-                _ensure_thread_state(data, room_id, thread_id)
+                ensure_thread_state(data, room_id, thread_id)
                 for item in data["items"]:
                     if item["id"] == item_id:
                         item["assigned_agent"] = agent_name
-                        item["updated_at"] = _now_iso()
-                        data["updated_at"] = _now_iso()
+                        item["updated_at"] = now_iso()
+                        data["updated_at"] = now_iso()
                         return f"\U0001f464 `{item_id}` assigned to **{agent_name}**."
                 return f"\u274c Todo `{item_id}` not found."
 
-            result = _locked_update_json(path, do_assign)
+            result = locked_update_json(path, do_assign)
             await ctx.send_message(room_id, result, thread_id=reply_tid)
             ctx.suppress = True
             return
@@ -243,10 +243,10 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                 break
 
         def create_item(data: dict[str, Any]) -> dict[str, Any]:
-            _ensure_thread_state(data, room_id, thread_id)
+            ensure_thread_state(data, room_id, thread_id)
             existing_ids = {i["id"] for i in data["items"]}
-            new_id = _short_id(existing_ids)
-            now = _now_iso()
+            new_id = short_id(existing_ids)
+            now = now_iso()
             item = {
                 "id": new_id,
                 "title": title,
@@ -263,7 +263,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
             data["updated_at"] = now
             return item
 
-        new_item = _locked_update_json(path, create_item)
+        new_item = locked_update_json(path, create_item)
         emoji = PRIORITY_EMOJI.get(priority, "")
         msg = (
             f"\U0001f4dd Added: **{title}** (`{new_item['id']}`)\n"
@@ -279,7 +279,7 @@ async def workloop_command(ctx: MessageReceivedContext) -> None:
                         item["event_id"] = event_id
                         break
 
-            _locked_update_json(path, save_event_id)
+            locked_update_json(path, save_event_id)
             logger.info("workloop-command: created todo %s with event %s", new_item["id"], event_id)
         ctx.suppress = True
 

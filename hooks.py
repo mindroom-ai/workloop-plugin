@@ -51,28 +51,46 @@ AutoPokeRuntime = _types.AutoPokeRuntime
 
 _sanitize = _state._sanitize
 _thread_key = _state._thread_key
-_resolve_scope = _state._resolve_scope
-_response_scope_thread_id = _state._response_scope_thread_id
-_now_iso = _state._now_iso
-_short_id = _state._short_id
-_read_json = _state._read_json
-_locked_update_json = _state._locked_update_json
-_todos_path = _state._todos_path
-_agent_state_path = _state._agent_state_path
-_read_agent_state = _state._read_agent_state
-_update_agent_state = _state._update_agent_state
-_poke_agent_scope = _state._poke_agent_scope
+resolve_scope = _state.resolve_scope
+_resolve_scope = resolve_scope
+response_scope_thread_id = _state.response_scope_thread_id
+_response_scope_thread_id = response_scope_thread_id
+now_iso = _state.now_iso
+_now_iso = now_iso
+short_id = _state.short_id
+_short_id = short_id
+read_json = _state.read_json
+_read_json = read_json
+locked_update_json = _state.locked_update_json
+_locked_update_json = locked_update_json
+todos_path = _state.todos_path
+_todos_path = todos_path
+agent_state_path = _state.agent_state_path
+_agent_state_path = agent_state_path
+read_agent_state = _state.read_agent_state
+_read_agent_state = read_agent_state
+update_agent_state = _state.update_agent_state
+_update_agent_state = update_agent_state
+poke_agent_scope = _state.poke_agent_scope
+_poke_agent_scope = poke_agent_scope
 
-_read_todos = _todos._read_todos
-_ensure_thread_state = _todos._ensure_thread_state
+read_todos = _todos.read_todos
+_read_todos = read_todos
+ensure_thread_state = _todos.ensure_thread_state
+_ensure_thread_state = ensure_thread_state
 is_blocked = _todos.is_blocked
 is_actionable = _todos.is_actionable
-_would_create_cycle = _todos._would_create_cycle
-_newly_unblocked = _todos._newly_unblocked
+would_create_cycle = _todos.would_create_cycle
+_would_create_cycle = would_create_cycle
+newly_unblocked = _todos.newly_unblocked
+_newly_unblocked = newly_unblocked
 
-_format_item_line = _formatting._format_item_line
-_format_list = _formatting._format_list
-_format_plan = _formatting._format_plan
+format_item_line = _formatting.format_item_line
+_format_item_line = format_item_line
+format_list = _formatting.format_list
+_format_list = format_list
+format_plan = _formatting.format_plan
+_format_plan = format_plan
 
 _run_poke_scan = _poke._run_poke_scan
 _parse_poke_interval_seconds = _poke._parse_poke_interval_seconds
@@ -100,6 +118,24 @@ __all__ = [
     "_AUTO_POKE_HOOK_SOURCE",
     "_TRIGGER_DISPATCH_CONTENT_KEY",
     "_PLUGIN_NAME",
+    "agent_state_path",
+    "ensure_thread_state",
+    "format_item_line",
+    "format_list",
+    "format_plan",
+    "locked_update_json",
+    "newly_unblocked",
+    "now_iso",
+    "poke_agent_scope",
+    "read_agent_state",
+    "read_json",
+    "read_todos",
+    "resolve_scope",
+    "response_scope_thread_id",
+    "short_id",
+    "todos_path",
+    "update_agent_state",
+    "would_create_cycle",
     "_agent_state_path",
     "_auto_poke_loop",
     "_build_auto_poke_runtime",

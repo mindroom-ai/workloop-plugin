@@ -8,7 +8,7 @@ from .todos import is_actionable, is_blocked
 from .types import PRIORITY_EMOJI, PRIORITY_ORDER, TERMINAL_STATUSES
 
 
-def _format_item_line(item: dict[str, Any], *, show_status: bool = False) -> str:
+def format_item_line(item: dict[str, Any], *, show_status: bool = False) -> str:
     emoji = PRIORITY_EMOJI.get(item.get("priority", "medium"), "\u26aa")
     status_mark = ""
     if show_status:
@@ -20,7 +20,7 @@ def _format_item_line(item: dict[str, Any], *, show_status: bool = False) -> str
     return f"  {emoji} `{item['id']}` {status_mark}{item['title']} [{item.get('priority', 'medium')}]{assigned}"
 
 
-def _format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
+def format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
     if not items:
         return "\u2728 No items in this thread's work plan."
     items_by_id = {item["id"]: item for item in items}
@@ -37,7 +37,7 @@ def _format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
     if actionable:
         lines.append("\n**Actionable:**")
         for i in actionable:
-            lines.append(_format_item_line(i))
+            lines.append(format_item_line(i))
 
     if blocked:
         lines.append("\n**Blocked:**")
@@ -46,17 +46,17 @@ def _format_list(items: list[dict[str, Any]], *, show_all: bool = False) -> str:
                 d for d in i.get("depends_on", []) if items_by_id.get(d, {}).get("status") not in TERMINAL_STATUSES
             ]
             waiting_str = ", ".join(f"`{d}`" for d in waiting)
-            lines.append(f"{_format_item_line(i)} waiting on {waiting_str}")
+            lines.append(f"{format_item_line(i)} waiting on {waiting_str}")
 
     if show_all and done:
         lines.append("\n**Done/Cancelled:**")
         for i in done:
-            lines.append(_format_item_line(i, show_status=True))
+            lines.append(format_item_line(i, show_status=True))
 
     return "\n".join(lines)
 
 
-def _format_plan(items: list[dict[str, Any]]) -> str:
+def format_plan(items: list[dict[str, Any]]) -> str:
     """Full dependency-aware work plan view."""
     if not items:
         return "\u2728 No items in this thread's work plan."
@@ -87,3 +87,9 @@ def _format_plan(items: list[dict[str, Any]]) -> str:
         )
 
     return "\n".join(lines)
+
+
+# Backward-compatible aliases for older imports.
+_format_item_line = format_item_line
+_format_list = format_list
+_format_plan = format_plan

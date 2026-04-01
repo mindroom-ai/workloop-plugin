@@ -22,7 +22,7 @@ def _thread_key(room_id: str, thread_id: str | None) -> str:
     return f"{_sanitize(room_id)}_{_sanitize(resolved)}"
 
 
-def _resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
+def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     """Return (room_id, storage_thread_id, reply_thread_id).
 
     storage_thread_id: None for room-level → becomes "main" in _thread_key.
@@ -38,29 +38,29 @@ def _resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     return room_id, storage_tid, reply_tid
 
 
-def _response_scope_thread_id(envelope: Any) -> str:
+def response_scope_thread_id(envelope: Any) -> str:
     """Return the actual response-scope thread key for agent-generated work state."""
     return envelope.target.resolved_thread_id or envelope.target.thread_id or "main"
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _short_id(existing_ids: set[str]) -> str:
+def short_id(existing_ids: set[str]) -> str:
     while True:
         candidate = uuid.uuid4().hex[:8]
         if candidate not in existing_ids:
             return candidate
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _locked_update_json(path: Path, mutate: Any) -> Any:
+def locked_update_json(path: Path, mutate: Any) -> Any:
     """Read-modify-write JSON under an exclusive fcntl lock."""
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,18 +75,18 @@ def _locked_update_json(path: Path, mutate: Any) -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _todos_path(state_root: Path, room_id: str, thread_id: str | None) -> Path:
+def todos_path(state_root: Path, room_id: str, thread_id: str | None) -> Path:
     key = _thread_key(room_id, thread_id)
     return state_root / "threads" / key / "todos.json"
 
 
-def _agent_state_path(state_root: Path, agent_name: str) -> Path:
+def agent_state_path(state_root: Path, agent_name: str) -> Path:
     return state_root / "agents" / f"{agent_name}.json"
 
 
-def _read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
-    path = _agent_state_path(state_root, agent_name)
-    data = _read_json(path)
+def read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
+    path = agent_state_path(state_root, agent_name)
+    data = read_json(path)
     if not data:
         return {
             "agent_name": agent_name,
@@ -104,8 +104,8 @@ def _read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
     return data
 
 
-def _update_agent_state(state_root: Path, agent_name: str, updates: dict[str, Any]) -> None:
-    path = _agent_state_path(state_root, agent_name)
+def update_agent_state(state_root: Path, agent_name: str, updates: dict[str, Any]) -> None:
+    path = agent_state_path(state_root, agent_name)
 
     def mutate(data: dict[str, Any]) -> None:
         if not data:
@@ -122,10 +122,10 @@ def _update_agent_state(state_root: Path, agent_name: str, updates: dict[str, An
             data.setdefault("active_runs", {})
         data.update(updates)
 
-    _locked_update_json(path, mutate)
+    locked_update_json(path, mutate)
 
 
-def _poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: datetime) -> None:
+def poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: datetime) -> None:
     """Record a poke timestamp for a specific thread scope."""
 
     def mutate(data: dict[str, Any]) -> None:
@@ -139,5 +139,19 @@ def _poke_agent_scope(state_root: Path, agent_name: str, scope_key: str, now: da
         # Also set legacy field for backward compat
         data["last_poked_at"] = now.isoformat()
 
-    path = _agent_state_path(state_root, agent_name)
-    _locked_update_json(path, mutate)
+    path = agent_state_path(state_root, agent_name)
+    locked_update_json(path, mutate)
+
+
+# Backward-compatible aliases for older imports.
+_resolve_scope = resolve_scope
+_response_scope_thread_id = response_scope_thread_id
+_now_iso = now_iso
+_short_id = short_id
+_read_json = read_json
+_locked_update_json = locked_update_json
+_todos_path = todos_path
+_agent_state_path = agent_state_path
+_read_agent_state = read_agent_state
+_update_agent_state = update_agent_state
+_poke_agent_scope = poke_agent_scope
