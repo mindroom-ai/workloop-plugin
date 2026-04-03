@@ -11,6 +11,13 @@ from typing import Any
 
 from mindroom.hooks import hook
 
+# MindRoom loads plugin files (hooks.py, tools.py) by absolute path using
+# importlib — they aren't part of a real Python package, so normal relative
+# imports like ``from . import state`` don't work.  We register a synthetic
+# package in sys.modules pointing at the plugin directory so that submodules
+# (state.py, todos.py, etc.) can use relative imports between each other.
+# The thread-goal plugin uses a simpler ``spec_from_file_location`` approach
+# because its submodules don't import each other.
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _PACKAGE_NAME = f"{__name__}_modules"
 
