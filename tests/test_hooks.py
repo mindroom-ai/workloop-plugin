@@ -569,7 +569,9 @@ async def test_has_pending_schedules_returns_true_when_matching(tmp_path: Path) 
         return {
             "task-1": {
                 "status": "pending",
-                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+                "workflow": json.dumps(
+                    {"thread_id": "$threadA", "room_id": "!room:test"}
+                ),
             },
         }
 
@@ -590,7 +592,9 @@ async def test_has_pending_schedules_returns_false_when_no_pending(
         return {
             "task-1": {
                 "status": "done",
-                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+                "workflow": json.dumps(
+                    {"thread_id": "$threadA", "room_id": "!room:test"}
+                ),
             },
         }
 
@@ -619,7 +623,9 @@ async def test_has_pending_schedules_thread_mismatch(tmp_path: Path) -> None:
         return {
             "task-1": {
                 "status": "pending",
-                "workflow": {"thread_id": "$otherThread", "room_id": "!room:test"},
+                "workflow": json.dumps(
+                    {"thread_id": "$otherThread", "room_id": "!room:test"}
+                ),
             },
         }
 
@@ -639,7 +645,7 @@ async def test_has_pending_schedules_room_level(tmp_path: Path) -> None:
         return {
             "task-1": {
                 "status": "pending",
-                "workflow": {"thread_id": None, "room_id": "!room:test"},
+                "workflow": json.dumps({"thread_id": None, "room_id": "!room:test"}),
             },
         }
 
@@ -648,6 +654,25 @@ async def test_has_pending_schedules_room_level(tmp_path: Path) -> None:
     )
     result = await module._has_pending_schedules(runtime, "!room:test", None)
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_pending_schedules_ignores_malformed_workflow(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+
+    async def fake_querier(room_id, event_type, state_key):
+        return {
+            "task-1": {
+                "status": "pending",
+                "workflow": "{not-json",
+            },
+        }
+
+    runtime = _make_runtime(
+        module, tmp_path, room_state_querier=AsyncMock(side_effect=fake_querier)
+    )
+    result = await module._has_pending_schedules(runtime, "!room:test", "$threadA")
+    assert result is False
 
 
 # -- _should_poke_agent min_idle tests --
@@ -719,7 +744,9 @@ async def test_poke_scan_skips_threads_with_pending_schedules(tmp_path: Path) ->
         return {
             "task-1": {
                 "status": "pending",
-                "workflow": {"thread_id": "$threadA", "room_id": "!room:test"},
+                "workflow": json.dumps(
+                    {"thread_id": "$threadA", "room_id": "!room:test"}
+                ),
             },
         }
 

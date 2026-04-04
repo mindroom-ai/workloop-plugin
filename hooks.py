@@ -138,6 +138,23 @@ async def stop_auto_poke_loop(ctx: Any) -> None:
             _AUTO_POKE_TASK = None
 
 
+start_auto_poke_loop = hook(
+    event="agent:started",
+    name="workloop-auto-poke-start",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)(start_auto_poke_loop)
+
+stop_auto_poke_loop = hook(
+    event="agent:stopped",
+    name="workloop-auto-poke-stop",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)(stop_auto_poke_loop)
+
+
 async def workloop_command(ctx: Any) -> None:
     """Facade for the command hook that preserves local test patching."""
     body = ctx.envelope.body.strip()
@@ -152,6 +169,15 @@ async def workloop_command(ctx: Any) -> None:
         ctx.suppress = True
         return
     await commands.workloop_command(ctx)
+
+
+workloop_command = hook(
+    event="message:received",
+    name="workloop-command",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=15000,
+)(workloop_command)
 
 
 inject_todos = poke.inject_todos

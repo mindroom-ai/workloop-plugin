@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -132,9 +133,18 @@ async def _has_pending_schedules(
     if result is None:
         return False
     for _task_id, content in result.items():
+        if not isinstance(content, dict):
+            continue
         if content.get("status") != "pending":
             continue
         workflow = content.get("workflow") or {}
+        if isinstance(workflow, str):
+            try:
+                workflow = json.loads(workflow)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(workflow, dict):
+            continue
         if workflow.get("thread_id") == thread_id:
             return True
     return False

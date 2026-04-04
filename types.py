@@ -14,6 +14,7 @@ else:
     from pathlib import Path
     from typing import Any, Protocol
 
+    from mindroom.constants import ROUTER_AGENT_NAME
     from mindroom.hooks import HookMessageSender, HookRoomStateQuerier
 
     LOGGER_NAME = (
