@@ -1,6 +1,12 @@
 # Workloop
 
-Autonomous, persistent work plans for MindRoom agents.
+[![License](https://img.shields.io/github/license/mindroom-ai/workloop-plugin)](https://github.com/mindroom-ai/workloop-plugin/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-plugins-blue)](https://docs.mindroom.chat/plugins/)
+[![Hooks](https://img.shields.io/badge/docs-hooks-blue)](https://docs.mindroom.chat/hooks/)
+
+<img src="https://raw.githubusercontent.com/mindroom-ai/mindroom/main/frontend/public/logo.png" alt="MindRoom Logo" align="right" width="120" />
+
+Autonomous, persistent work plans for [MindRoom](https://github.com/mindroom-ai/mindroom) agents.
 
 Without workloop, an agent responds to a message and stops. With workloop, an agent breaks a task into steps, works through them one by one, and automatically resumes when it goes idle — even across multiple conversation turns. This is not a simple todo list. It's a closed-loop execution system: the agent plans, works, gets poked when idle, and keeps going until the plan is done.
 
