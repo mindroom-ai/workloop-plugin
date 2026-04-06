@@ -1,17 +1,15 @@
 # Workloop
 
-MindRoom plugin that gives agents autonomous, persistent work plans.
+Autonomous, persistent work plans for MindRoom agents.
 
-Without workloop, an agent responds to a message and stops. With workloop, an agent can break a task into steps, work through them one by one, and automatically resume when it goes idle — even across multiple conversation turns.
+Without workloop, an agent responds to a message and stops. With workloop, an agent breaks a task into steps, works through them one by one, and automatically resumes when it goes idle — even across multiple conversation turns. This is not a simple todo list. It's a closed-loop execution system: the agent plans, works, gets poked when idle, and keeps going until the plan is done.
 
-## What it does
+## How it works
 
-1. **Plan** — Agent creates a multi-step work plan with priorities and dependencies
-2. **Execute** — Agent works through items, marking them complete as it goes
-3. **Auto-poke** — When the agent finishes a response but has unfinished items, the system automatically nudges it to continue
-4. **Persist** — Plans survive across turns, compaction, and restarts (stored as JSON files, injected into context via `message:enrich` hook)
-
-This is NOT a simple todo list. It's a closed-loop execution system: the agent plans, works, gets poked when idle, and keeps going until the plan is done.
+1. Agent creates a multi-step work plan with priorities and dependencies
+2. Agent works through items, marking them complete as it goes
+3. The plan is stored as JSON and injected into every prompt via `message:enrich`
+4. When the agent finishes a response but has unfinished items, the auto-poke system nudges it to continue
 
 ## Agent tools
 
@@ -23,34 +21,10 @@ This is NOT a simple todo list. It's a closed-loop execution system: the agent p
 | `update_todo(todo_id, ...)` | Change title, priority, status, or dependencies |
 | `list_todos(show_all)` | View current plan (optionally include completed items) |
 
-## Auto-poke system
-
-A background loop starts when the router agent comes online (`agent:started` hook). It periodically scans for agents that:
-- Have unblocked todo items remaining
-- Are not currently processing a message
-- Haven't been poked recently (cooldown)
-
-When found, the system sends a nudge message to the agent's thread, waking it up to continue working.
-
-### Configuration
-
-```yaml
-# In plugin settings (config.yaml)
-poke_interval_seconds: 120     # How often to scan for idle agents
-poke_cooldown_seconds: 300     # Min time between pokes per agent
-stale_busy_seconds: 600        # Auto-prune agents stuck in "busy" state
-max_pokes_per_tick: 3          # Max agents poked per scan cycle
-```
-
-## User commands
-
-- `!todo help` — Show usage
-- `!workloop-tick` — Manual diagnostic poke scan (deprecated, auto-poke replaces this)
-
 ## Hooks
 
-| Hook | Event | What it does |
-|------|-------|-------------|
+| Hook | Event | Purpose |
+|------|-------|---------|
 | `workloop-auto-poke-start` | `agent:started` | Start the auto-poke background loop |
 | `workloop-auto-poke-stop` | `agent:stopped` | Stop the loop |
 | `inject_todos` | `message:enrich` | Inject the current plan into every prompt |
@@ -58,20 +32,15 @@ max_pokes_per_tick: 3          # Max agents poked per scan cycle
 | `workloop_command` | `message:received` | Handle `!todo` commands |
 | `workloop_react` | `reaction:received` | Complete/cancel items via emoji reactions |
 
-## Storage
+## Configuration
 
-Plain JSON files with `fcntl` file locking:
-
+```yaml
+# Plugin settings in config.yaml
+poke_interval_seconds: 120     # How often to scan for idle agents
+poke_cooldown_seconds: 300     # Min time between pokes per agent
+stale_busy_seconds: 600        # Auto-prune agents stuck in "busy" state
+max_pokes_per_tick: 3          # Max agents poked per scan cycle
 ```
-{mindroom_data}/plugins/workloop/
-├── threads/{room_thread}/todos.json   # Per-thread work plans
-└── agents/{name}.json                 # Agent busy/idle state
-```
-
-## Complements thread-goal
-
-**thread-goal** = *what* the agent is trying to achieve (the destination)
-**workloop** = *how* it gets there (the steps)
 
 ## Setup
 
@@ -83,3 +52,5 @@ Plain JSON files with `fcntl` file locking:
    ```
 3. Add `workloop` to agent's tools list
 4. Restart MindRoom
+
+Complements [thread-goal](https://github.com/mindroom-ai/thread-goal-plugin): thread-goal is *what* the agent is trying to achieve, workloop is *how* it gets there.
