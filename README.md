@@ -75,7 +75,7 @@ Plain JSON files with `fcntl` file locking:
 
 ## Setup
 
-1. Copy to `~/.mindroom-chat/plugins/workloop`
+1. Copy to `~/.mindroom/plugins/workloop`
 2. Add to `config.yaml`:
    ```yaml
    plugins:
