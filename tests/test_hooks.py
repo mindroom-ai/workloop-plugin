@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import util
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,14 +13,17 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+PACKAGE_NAME = f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
+
 
 def _load_hooks_module():
     hooks_path = Path(__file__).resolve().parents[1] / "hooks.py"
-    module_name = f"workloop_hooks_test_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(module_name, hooks_path)
+    module_name = f"{PACKAGE_NAME}.hooks"
+    sys.modules.pop(module_name, None)
+    spec = util.spec_from_file_location(module_name, hooks_path)
     assert spec is not None
     assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
+    module = util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
@@ -55,6 +57,13 @@ class EnvelopeStub:
     room_id: str = "!room:test"
     thread_id: str | None = None
     resolved_thread_id: str = "$reply"
+
+    @property
+    def target(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            thread_id=self.thread_id,
+            resolved_thread_id=self.resolved_thread_id,
+        )
 
 
 @dataclass
@@ -459,7 +468,7 @@ async def test_auto_poke_messages_use_background_hook_source(tmp_path: Path) -> 
     assert args[1].startswith("@worker workloop resume.")
     assert args[2] == "$thread"
     assert args[3] == module._AUTO_POKE_HOOK_SOURCE
-    assert args[4] is None
+    assert args[4] == {"com.mindroom._trigger_dispatch": True}
 
 
 def _write_thread_todos(

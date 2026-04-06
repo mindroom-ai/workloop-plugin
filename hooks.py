@@ -3,59 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from importlib import import_module, util
-from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from mindroom.hooks import hook
-
-# MindRoom loads plugin files (hooks.py, tools.py) by absolute path using
-# importlib — they aren't part of a real Python package, so normal relative
-# imports like ``from . import state`` don't work.  We register a synthetic
-# package in sys.modules pointing at the plugin directory so that submodules
-# (state.py, todos.py, etc.) can use relative imports between each other.
-# The thread-goal plugin uses a simpler ``spec_from_file_location`` approach
-# because its submodules don't import each other.
-_PLUGIN_ROOT = Path(__file__).resolve().parent
-_PACKAGE_NAME = f"{__name__}_modules"
-
-
-def _ensure_package() -> None:
-    """Register a synthetic package so split modules can use relative imports."""
-    if _PACKAGE_NAME in sys.modules:
-        return
-
-    _PACKAGE_SPEC = util.spec_from_loader(_PACKAGE_NAME, loader=None, is_package=True)
-    _PACKAGE_MODULE = ModuleType(_PACKAGE_NAME)
-    _PACKAGE_MODULE.__file__ = str(_PLUGIN_ROOT / "__init__.py")
-    _PACKAGE_MODULE.__package__ = _PACKAGE_NAME
-    _PACKAGE_MODULE.__path__ = [str(_PLUGIN_ROOT)]
-    if _PACKAGE_SPEC is not None:
-        _PACKAGE_SPEC.submodule_search_locations = [str(_PLUGIN_ROOT)]
-        _PACKAGE_MODULE.__spec__ = _PACKAGE_SPEC
-    sys.modules[_PACKAGE_NAME] = _PACKAGE_MODULE
-
-
-def _load_module(name: str) -> ModuleType:
-    return import_module(f"{_PACKAGE_NAME}.{name}")
-
-
-_ensure_package()
-
-workloop_types = _load_module("types")
-state = _load_module("state")
-todos = _load_module("todos")
-formatting = _load_module("formatting")
-poke = _load_module("poke")
-commands = _load_module("commands")
-
-logger = workloop_types.logger
-ROUTER_AGENT_NAME = workloop_types.ROUTER_AGENT_NAME
-_AUTO_POKE_HOOK_SOURCE = workloop_types._AUTO_POKE_HOOK_SOURCE
-DEFAULT_POKE_INTERVAL_SECONDS = workloop_types.DEFAULT_POKE_INTERVAL_SECONDS
-AutoPokeRuntime = workloop_types.AutoPokeRuntime
+from . import commands, formatting, poke, state, todos, types as workloop_types
+from .types import (
+    AutoPokeRuntime,
+    DEFAULT_POKE_INTERVAL_SECONDS,
+    ROUTER_AGENT_NAME,
+    _AUTO_POKE_HOOK_SOURCE,
+    logger,
+)
 
 _run_poke_scan = poke.run_poke_scan
 _parse_poke_interval_seconds = poke._parse_poke_interval_seconds

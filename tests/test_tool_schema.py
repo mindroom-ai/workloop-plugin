@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-import importlib.util
+import sys
+from importlib import util
 from pathlib import Path
+from uuid import uuid4
+
+PACKAGE_NAME = f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
 
 
 def _load_tools_module():
     tools_path = Path(__file__).resolve().parents[1] / "tools.py"
-    spec = importlib.util.spec_from_file_location("workloop_tools_test", tools_path)
+    module_name = f"{PACKAGE_NAME}.tools_test_{uuid4().hex}"
+    sys.modules.pop(module_name, None)
+    spec = util.spec_from_file_location(module_name, tools_path)
     assert spec is not None
     assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
+    module = util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
