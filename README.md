@@ -8,7 +8,7 @@
 
 Autonomous, persistent work plans for [MindRoom](https://github.com/mindroom-ai/mindroom) agents.
 
-Without workloop, an agent responds once and stops. With workloop, an agent turns a task into a dependency-aware plan, works through it step by step, and gets nudged to resume when it goes idle. This is more than a todo list. It is a closed-loop execution system built around persistent per-thread state, prompt enrichment, and automatic follow-up.
+MindRoom agents can often complete tasks just fine without workloop. The issue it addresses is the failure mode where an agent stops before the work is actually finished and does not schedule the next follow-up step. Workloop reduces that risk by turning a task into a dependency-aware plan, keeping that plan in persistent per-thread state, surfacing it in the prompt, and nudging the agent to resume when actionable work remains.
 
 ## Features
 
