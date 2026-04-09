@@ -140,6 +140,7 @@ workloop_command = hook(
 
 inject_todos = poke.inject_todos
 track_idle = poke.track_idle
+track_cancelled = poke.track_cancelled
 workloop_react = todos.workloop_react
 
 __all__ = [
@@ -164,6 +165,7 @@ __all__ = [
     "state",
     "stop_auto_poke_loop",
     "todos",
+    "track_cancelled",
     "track_idle",
     "workloop_command",
     "workloop_react",

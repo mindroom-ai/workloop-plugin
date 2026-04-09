@@ -11,6 +11,7 @@ from typing import Any
 from mindroom.hooks import (
     AfterResponseContext,
     AgentLifecycleContext,
+    CancelledResponseContext,
     EnrichmentItem,
     MessageEnrichContext,
     hook,
@@ -441,4 +442,33 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     except Exception:
         logger.exception(
             "workloop-track-idle: failed to update agent state for %s", agent_name
+        )
+
+
+@hook(
+    event="message:cancelled",
+    name="workloop-track-cancelled",
+    priority=100,
+    timeout_ms=3000,
+)
+async def track_cancelled(ctx: CancelledResponseContext) -> None:
+    """Clear active run on cancellation so the next poke scan can re-poke."""
+    agent_name = ctx.info.envelope.agent_name
+    room_id = ctx.info.envelope.room_id
+    thread_id = response_scope_thread_id(ctx.info.envelope)
+    run_key = f"{room_id}:{thread_id}"
+    try:
+
+        def _clear_cancelled_run(data: dict[str, Any]) -> None:
+            active_runs = data.get("active_runs", {})
+            active_runs.pop(run_key, None)
+            data["active_runs"] = active_runs
+            # Do NOT update last_response_at — agent didn't actually respond
+
+        path = agent_state_path(ctx.state_root, agent_name)
+        locked_update_json(path, _clear_cancelled_run)
+    except Exception:
+        logger.exception(
+            "workloop-track-cancelled: failed to clear active run for %s",
+            agent_name,
         )
