@@ -42,6 +42,25 @@ from .types import (
 _AUTO_POKE_TASK: asyncio.Task[None] | None = None
 
 
+def _clear_active_run(
+    state_root: Path,
+    agent_name: str,
+    run_key: str,
+    *,
+    record_last_response: bool,
+) -> None:
+    path = agent_state_path(state_root, agent_name)
+
+    def _remove_active_run(data: dict[str, Any]) -> None:
+        active_runs = data.get("active_runs", {})
+        active_runs.pop(run_key, None)
+        data["active_runs"] = active_runs
+        if record_last_response:
+            data["last_response_at"] = now_iso()
+
+    locked_update_json(path, _remove_active_run)
+
+
 def _should_poke_agent(
     state_root: Path,
     agent_name: str,
@@ -430,15 +449,12 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     thread_id = response_scope_thread_id(ctx.result.envelope)
     run_key = f"{room_id}:{thread_id}"
     try:
-
-        def _remove_active_run(data: dict[str, Any]) -> None:
-            active_runs = data.get("active_runs", {})
-            active_runs.pop(run_key, None)
-            data["active_runs"] = active_runs
-            data["last_response_at"] = now_iso()
-
-        path = agent_state_path(ctx.state_root, agent_name)
-        locked_update_json(path, _remove_active_run)
+        _clear_active_run(
+            ctx.state_root,
+            agent_name,
+            run_key,
+            record_last_response=True,
+        )
     except Exception:
         logger.exception(
             "workloop-track-idle: failed to update agent state for %s", agent_name
@@ -452,23 +468,20 @@ async def track_idle(ctx: AfterResponseContext) -> None:
     timeout_ms=3000,
 )
 async def track_cancelled(ctx: CancelledResponseContext) -> None:
-    """Clear active run on cancellation so the next poke scan can re-poke."""
+    """Remove the active run for this scope without recording a response timestamp."""
     agent_name = ctx.info.envelope.agent_name
     room_id = ctx.info.envelope.room_id
     thread_id = response_scope_thread_id(ctx.info.envelope)
     run_key = f"{room_id}:{thread_id}"
     try:
-
-        def _clear_cancelled_run(data: dict[str, Any]) -> None:
-            active_runs = data.get("active_runs", {})
-            active_runs.pop(run_key, None)
-            data["active_runs"] = active_runs
-            # Do NOT update last_response_at — agent didn't actually respond
-
-        path = agent_state_path(ctx.state_root, agent_name)
-        locked_update_json(path, _clear_cancelled_run)
+        _clear_active_run(
+            ctx.state_root,
+            agent_name,
+            run_key,
+            record_last_response=False,
+        )
     except Exception:
         logger.exception(
-            "workloop-track-cancelled: failed to clear active run for %s",
+            "workloop-track-cancelled: failed to update agent state for %s",
             agent_name,
         )
