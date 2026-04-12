@@ -567,6 +567,101 @@ async def test_poke_cooldown_is_per_scope(tmp_path: Path) -> None:
     assert last_call_thread == "$threadC"
 
 
+@pytest.mark.asyncio
+async def test_poke_scan_skips_duplicate_message_for_same_scope(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={
+            "poke_interval_seconds": 1,
+            "poke_cooldown_seconds": 0,
+            "recent_response_grace_seconds": 0,
+            "min_idle_before_poke_seconds": 0,
+        },
+        message_sender=message_sender,
+    )
+
+    item = {
+        "id": "dup1",
+        "title": "Collect review results",
+        "status": "open",
+        "priority": "high",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room_threadA", "!room:test", "$threadA", [item])
+
+    pokes1 = await module._run_poke_scan(runtime)
+    pokes2 = await module._run_poke_scan(runtime)
+
+    assert pokes1 == 1
+    assert pokes2 == 0
+    assert message_sender.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_poke_scan_re_sends_when_message_changes(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={
+            "poke_interval_seconds": 1,
+            "poke_cooldown_seconds": 0,
+            "recent_response_grace_seconds": 0,
+            "min_idle_before_poke_seconds": 0,
+        },
+        message_sender=message_sender,
+    )
+
+    _write_thread_todos(
+        tmp_path,
+        "room_threadA",
+        "!room:test",
+        "$threadA",
+        [
+            {
+                "id": "dup1",
+                "title": "Collect review results",
+                "status": "open",
+                "priority": "high",
+                "assigned_agent": "worker",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    pokes1 = await module._run_poke_scan(runtime)
+
+    _write_thread_todos(
+        tmp_path,
+        "room_threadA",
+        "!room:test",
+        "$threadA",
+        [
+            {
+                "id": "dup1",
+                "title": "Collect Round 7 review results",
+                "status": "open",
+                "priority": "high",
+                "assigned_agent": "worker",
+                "depends_on": [],
+            }
+        ],
+    )
+
+    pokes2 = await module._run_poke_scan(runtime)
+
+    assert pokes1 == 1
+    assert pokes2 == 1
+    assert message_sender.await_count == 2
+    assert "Collect Round 7 review results" in message_sender.await_args_list[-1].args[1]
+
+
 # -- _has_pending_schedules tests --
 
 

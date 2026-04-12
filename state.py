@@ -99,6 +99,8 @@ def read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
             "active_runs": {},
             "last_response_at": None,
             "last_poked_at": None,
+            "poked_scopes": {},
+            "poked_scope_messages": {},
         }
     # Migrate legacy format
     if "is_busy" in data:
@@ -107,6 +109,8 @@ def read_agent_state(state_root: Path, agent_name: str) -> dict[str, Any]:
         data.pop("current_room_id", None)
         data.pop("current_thread_id", None)
         data.setdefault("active_runs", {})
+    data.setdefault("poked_scopes", {})
+    data.setdefault("poked_scope_messages", {})
     return data
 
 
@@ -121,6 +125,8 @@ def update_agent_state(
             data["active_runs"] = {}
             data["last_response_at"] = None
             data["last_poked_at"] = None
+            data["poked_scopes"] = {}
+            data["poked_scope_messages"] = {}
         # Migrate legacy format
         if "is_busy" in data:
             data.pop("is_busy", None)
@@ -128,13 +134,19 @@ def update_agent_state(
             data.pop("current_room_id", None)
             data.pop("current_thread_id", None)
             data.setdefault("active_runs", {})
+        data.setdefault("poked_scopes", {})
+        data.setdefault("poked_scope_messages", {})
         data.update(updates)
 
     locked_update_json(path, mutate)
 
 
 def poke_agent_scope(
-    state_root: Path, agent_name: str, scope_key: str, now: datetime
+    state_root: Path,
+    agent_name: str,
+    scope_key: str,
+    now: datetime,
+    message_text: str | None = None,
 ) -> None:
     """Record a poke timestamp for a specific thread scope."""
 
@@ -144,8 +156,15 @@ def poke_agent_scope(
             data["active_runs"] = {}
             data["last_response_at"] = None
             data["last_poked_at"] = None
+            data["poked_scopes"] = {}
+            data["poked_scope_messages"] = {}
         poked_scopes: dict[str, str] = data.setdefault("poked_scopes", {})
         poked_scopes[scope_key] = now.isoformat()
+        if message_text is not None:
+            poked_scope_messages: dict[str, str] = data.setdefault(
+                "poked_scope_messages", {}
+            )
+            poked_scope_messages[scope_key] = message_text
         # Also set legacy field for backward compat
         data["last_poked_at"] = now.isoformat()
 

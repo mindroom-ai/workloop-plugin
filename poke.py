@@ -228,6 +228,16 @@ async def _run_poke_scan(
             ):
                 continue
             poke_text = _format_poke_message(agent_name, agent_items, items)
+            agent_state = read_agent_state(ctx.state_root, agent_name)
+            last_poke_text = agent_state.get("poked_scope_messages", {}).get(scope_key)
+            if last_poke_text == poke_text:
+                logger.info(
+                    "workloop-poke: skipping duplicate poke for %s in room %s thread %s",
+                    agent_name,
+                    room_id,
+                    matrix_thread_id,
+                )
+                continue
             try:
                 await ctx.send_message(
                     room_id,
@@ -235,7 +245,9 @@ async def _run_poke_scan(
                     thread_id=matrix_thread_id,
                     trigger_dispatch=True,
                 )
-                poke_agent_scope(ctx.state_root, agent_name, scope_key, now)
+                poke_agent_scope(
+                    ctx.state_root, agent_name, scope_key, now, message_text=poke_text
+                )
                 pokes_sent += 1
                 logger.info(
                     "workloop-poke: poked %s in room %s thread %s",
