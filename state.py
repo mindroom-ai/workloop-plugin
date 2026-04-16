@@ -28,21 +28,21 @@ def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     storage_thread_id: None for room-level → becomes "main" in _thread_key.
     reply_thread_id: resolved_thread_id for sending responses in the right thread.
 
-    ``thread_id`` on the envelope is None for room-level messages.
+    ``source_thread_id`` on the envelope target is None for room-level messages.
     ``resolved_thread_id`` is always set (may equal the message's own event ID for
     room-level messages), so it is the correct value for replying in-thread.
     """
     room_id = envelope.room_id
-    storage_tid = envelope.target.thread_id  # None for room-level, set for threads
+    storage_tid = envelope.target.source_thread_id  # None for room-level, set for threads
     reply_tid = (
-        envelope.target.resolved_thread_id if envelope.target.thread_id else None
+        envelope.target.resolved_thread_id if envelope.target.source_thread_id else None
     )
     return room_id, storage_tid, reply_tid
 
 
 def response_scope_thread_id(envelope: Any) -> str:
     """Return the actual response-scope thread key for agent-generated work state."""
-    return envelope.target.resolved_thread_id or envelope.target.thread_id or "main"
+    return envelope.target.resolved_thread_id or envelope.target.source_thread_id or "main"
 
 
 def now_iso() -> str:
