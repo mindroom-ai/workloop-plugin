@@ -1,0 +1,66 @@
+# mindroom-dev — single-issue development protocol
+# Spec: ISSUE-159. Every gate is signal-driven, not time-based.
+
+name: mindroom-dev
+version: "1.0"
+description: Single-issue dev protocol — file → plan → implement → review-loop → live-test → squash-merge.
+
+todos:
+  # 1. Living report — anchors the issue on disk.
+  - title: "Create living report at skills/mindroom-dev/references/reports/{{ ISSUE_REF }}.md (gate: file exists)"
+    priority: high
+
+  # 2-4. Dual-agent planning.
+  - title: "Spawn 2 planners (codex + claude) on {{ BRANCH }}-plan-* worktrees (gate: both running)"
+    depends_on: [1]
+    priority: high
+  - title: "Cross-feed plans → planners debate, each produces a critique (gate: both critiques on disk)"
+    depends_on: [2]
+  - title: "Synthesize final plan; commit as FIRST commit on {{ BRANCH }} (gate: commit exists on branch)"
+    depends_on: [3]
+    priority: high
+
+  # 5-6. Implementer — KEEP ALIVE across the whole loop (do not respawn).
+  - title: "Spawn implementer ({{ IMPLEMENTER_AGENT }}) on {{ BRANCH }} via tmux session {{ BRANCH }} — KEEP ALIVE for fix cycles (gate: tmux session running)"
+    depends_on: [4]
+    priority: high
+  - title: "Implementer reports complete: commit pushed AND tests pass (gate: signal from implementer)"
+    depends_on: [5]
+
+  # 7. Parallel review loop — sub-template, terminates on unanimous APPROVE on same SHA.
+  - sub_template: parallel-review-loop
+    params:
+      N_REVIEWERS: "{{ N_REVIEWERS }}"
+    depends_on: [6]
+
+  # 8. Diff sanity check — independent scope-creep guard.
+  - title: "Diff sanity check: git diff {{ BASE }}...{{ BRANCH }} — abort if scope exploded beyond plan (gate: manual ack)"
+    depends_on: [7]
+    priority: high
+
+  # 9-10. Live-test gate — bespoke evidence, NOT 'tests passed in CI'.
+  - title: "Capture live-test evidence at /tmp/{{ ISSUE_REF }}-evidence/ (screenshots, curl output, logs) (gate: files exist on disk)"
+    depends_on: [7]
+    priority: high
+  - title: "DevAgent verifies the evidence demonstrates the ACTUAL fix, not generic 'service started' noise (gate: manual ack)"
+    depends_on: [9]
+    priority: high
+
+  # 11a-11b. Commit message + safe squash merge.
+  - title: "Author commit message at /tmp/{{ ISSUE_REF }}-commit-msg.txt — body MUST contain problem/approach/why/how, NO test counts, NO reviewer names, NO file enumerations (gate: file exists, body ≥3 paragraphs)"
+    depends_on: [8, 10]
+    priority: high
+  - title: "Run skills/mindroom-dev/scripts/safe-squash-merge.sh -F /tmp/{{ ISSUE_REF }}-commit-msg.txt {{ BRANCH }} (gate: script exit 0)"
+    depends_on: [11]
+    priority: critical
+
+  # 12. Cinny-specific deploy step (no-op for other repos but listed unconditionally so it can't be skipped).
+  - title: "{% if REPO == 'cinny' %}Cinny deploy: npm run build && sudo systemctl restart mindroom-cinny.service (gate: service active){% else %}No deploy step required for {{ REPO }} (mark complete immediately){% endif %}"
+    depends_on: [12]
+
+  # 13-14. Status + thread recap.
+  - title: "Update {{ ISSUE_REF }}.md status to 🔍 APPROVAL PENDING (NEVER ✅ FIXED — only Bas verifies) (gate: report file edited)"
+    depends_on: [13]
+    priority: high
+  - title: "Post final thread summary with recap footer (gate: message sent)"
+    depends_on: [14]

@@ -1,8 +1,8 @@
 """Agent-facing tools for the MindRoom workloop plugin.
 
-This file is self-contained — all models, JSON helpers, lock helpers, and tool logic
-are in one module to avoid relative-import issues with MindRoom's plugin loader
-(which uses ``spec_from_file_location``).
+This file keeps the runtime logic and helpers local, and dynamically loads the
+sibling ``template_schemas.py`` module so plugin imports remain reliable under
+MindRoom's ``spec_from_file_location`` loader.
 
 Provides a ``WorkloopTodoManager`` toolkit that agents can use to create work plans,
 add/complete/update/list per-thread todos with dependencies.
@@ -14,14 +14,20 @@ import fcntl
 import json
 import logging
 import re
+import sys
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from importlib import util as importlib_util
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agno.tools import Toolkit
 from agno.agent import Agent
 from agno.team.team import Team
+from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, UndefinedError
+from pydantic import ValidationError
+import yaml
 
 from mindroom.tool_system.metadata import (
     SetupType,
@@ -56,6 +62,30 @@ PRIORITY_EMOJI: dict[str, str] = {
     "low": "\U0001f7e2",
 }
 PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+TEMPLATE_RECURSION_LIMIT = 3
+_JINJA_ENV = Environment(autoescape=False, undefined=StrictUndefined)
+
+
+def _load_template_schemas_module() -> Any:
+    module_name = f"{__name__}_template_schemas"
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return module
+
+    path = Path(__file__).with_name("template_schemas.py")
+    spec = importlib_util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load template schemas from {path}")
+
+    module = importlib_util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_TEMPLATE_SCHEMAS_MODULE = _load_template_schemas_module()
+PARAMS_SCHEMAS = _TEMPLATE_SCHEMAS_MODULE.PARAMS_SCHEMAS
+TemplateDocument = _TEMPLATE_SCHEMAS_MODULE.TemplateDocument
 
 # ══════════════════════════════════════════════════════════════════════
 # Helpers (duplicated from hooks.py — self-contained requirement)
@@ -170,6 +200,311 @@ def _newly_unblocked(
     return unblocked
 
 
+def _templates_dir() -> Path:
+    return Path(__file__).parent / "templates"
+
+
+def _template_path(name: str, template_dir: Path | None = None) -> Path:
+    if (
+        not name
+        or "/" in name
+        or "\\" in name
+        or ".." in name
+        or Path(name).is_absolute()
+    ):
+        raise ValueError(f"invalid template name: '{name}'")
+
+    root = (template_dir or _templates_dir()).resolve()
+    path = (root / f"{name}.yaml.j2").resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f"invalid template name: '{name}'")
+    return path
+
+
+def _render_jinja_template(
+    template_text: str,
+    params: Mapping[str, Any],
+    *,
+    path: Path,
+) -> str:
+    try:
+        return _JINJA_ENV.from_string(template_text).render(**params)
+    except UndefinedError as exc:
+        raise _template_value_error(path, f"undefined variable: {exc}") from exc
+    except TemplateSyntaxError as exc:
+        raise _template_value_error(path, f"syntax error: {exc}") from exc
+
+
+def _template_value_error(path: Path, message: str) -> ValueError:
+    return ValueError(f"Invalid template '{path.name}': {message}")
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    parts: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error["loc"])
+        parts.append(f"{location}: {error['msg']}")
+    return "; ".join(parts)
+
+
+def _load_template_document(path: Path, text: str) -> dict[str, Any]:
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise _template_value_error(path, str(exc)) from exc
+    if not isinstance(document, dict):
+        raise _template_value_error(path, "top level must be a mapping")
+    return document
+
+
+def _validate_template_document(
+    template: Mapping[str, Any],
+    path: Path,
+) -> Any:
+    try:
+        document = TemplateDocument.model_validate(template)
+    except ValidationError as exc:
+        raise _template_value_error(
+            path,
+            f"document validation failed: {_format_validation_error(exc)}",
+        ) from exc
+    expected_name = path.name.removesuffix(".yaml.j2")
+    if document.name != expected_name:
+        raise _template_value_error(
+            path,
+            f"name must match filename stem '{expected_name}'",
+        )
+    return document
+
+
+def _validate_dependency_cycle(template_name: str, todos: list[dict[str, Any]]) -> None:
+    states: dict[int, int] = {}
+    stack: list[int] = []
+
+    def visit(node_id: int) -> None:
+        state = states.get(node_id, 0)
+        if state == 1:
+            cycle_start = stack.index(node_id)
+            cycle = stack[cycle_start:] + [node_id]
+            cycle_str = ", ".join(str(node) for node in cycle)
+            raise ValueError(
+                f"template '{template_name}' has dependency cycle: {cycle_str}"
+            )
+        if state == 2:
+            return
+        states[node_id] = 1
+        stack.append(node_id)
+        for dep_id in todos[node_id - 1].get("depends_on", []):
+            visit(dep_id)
+        stack.pop()
+        states[node_id] = 2
+
+    for node_id in range(1, len(todos) + 1):
+        visit(node_id)
+
+
+def _load_template_metadata(path: Path) -> dict[str, str]:
+    template = _load_template_document(path, path.read_text(encoding="utf-8"))
+    expected_name = path.name.removesuffix(".yaml.j2")
+    name = template.get("name")
+    version = template.get("version")
+    description = template.get("description")
+    if not isinstance(name, str) or name != expected_name:
+        raise _template_value_error(
+            path,
+            f"name must match filename stem '{expected_name}'",
+        )
+    if not isinstance(version, str):
+        raise _template_value_error(path, "version must be a string")
+    if not isinstance(description, str):
+        raise _template_value_error(path, "description must be a string")
+    return {"name": name, "version": version, "description": description}
+
+
+def _validate_depends_on_indexes(
+    todos: list[dict[str, Any]],
+    *,
+    path: Path,
+) -> None:
+    total_items = len(todos)
+    for entry in todos:
+        for dep in entry.get("depends_on", []):
+            if dep < 1 or dep > total_items:
+                raise _template_value_error(
+                    path,
+                    f"depends_on index {dep} is out of range 1..{total_items}",
+                )
+
+
+def _render_template_definition(
+    name: str,
+    params: dict[str, Any],
+    *,
+    template_dir: Path | None = None,
+    depth: int = 1,
+) -> dict[str, Any]:
+    if depth > TEMPLATE_RECURSION_LIMIT:
+        raise ValueError(
+            f"Template recursion depth exceeded while expanding '{name}'"
+        )
+
+    path = _template_path(name, template_dir)
+    if not path.is_file():
+        raise ValueError(f"Unknown template: '{name}'")
+
+    raw_text = path.read_text(encoding="utf-8")
+    raw_template = _load_template_document(path, raw_text)
+    _validate_template_document(raw_template, path)
+    schema = PARAMS_SCHEMAS.get(name)
+    if schema is None:
+        resolved_params = dict(params)
+    else:
+        try:
+            resolved_params = schema.model_validate(params).model_dump(mode="python")
+        except ValidationError as exc:
+            raise _template_value_error(
+                path,
+                f"params validation failed: {_format_validation_error(exc)}",
+            ) from exc
+
+    rendered_text = _render_jinja_template(raw_text, resolved_params, path=path)
+    rendered_template = _load_template_document(path, rendered_text)
+    rendered_document = _validate_template_document(rendered_template, path)
+    rendered_todos = rendered_document.model_dump(mode="python", exclude_none=True)["todos"]
+    _validate_depends_on_indexes(rendered_todos, path=path)
+    expanded_todos = _expand_template_todos(
+        rendered_todos,
+        template_dir=template_dir,
+        depth=depth,
+    )
+    _validate_dependency_cycle(rendered_document.name, expanded_todos)
+
+    return {
+        "name": rendered_document.name,
+        "version": rendered_document.version,
+        "description": rendered_document.description,
+        "resolved_params": resolved_params,
+        "todos": expanded_todos,
+    }
+
+
+def _expand_template_todos(
+    todos: list[dict[str, Any]],
+    *,
+    template_dir: Path | None = None,
+    depth: int,
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    index_map: dict[int, tuple[int, int]] = {}
+
+    for original_index, entry in enumerate(todos, start=1):
+        if entry.get("title") is not None:
+            expanded.append(
+                {
+                    "title": entry["title"],
+                    "priority": entry.get("priority", "medium"),
+                    "assigned_agent": entry.get("assigned_agent", ""),
+                    "depends_on": [],
+                    "_parent_depends_on": list(entry.get("depends_on", [])),
+                }
+            )
+            flat_index = len(expanded)
+            index_map[original_index] = (flat_index, flat_index)
+            continue
+
+        child_template = _render_template_definition(
+            entry["sub_template"],
+            entry.get("params", {}),
+            template_dir=template_dir,
+            depth=depth + 1,
+        )
+        offset = len(expanded)
+        for child in child_template["todos"]:
+            expanded.append(
+                {
+                    "title": child["title"],
+                    "priority": child.get("priority", "medium"),
+                    "assigned_agent": child.get("assigned_agent", ""),
+                    "depends_on": [dep + offset for dep in child.get("depends_on", [])],
+                    "_parent_depends_on": [],
+                }
+            )
+        first_child = offset + 1
+        last_child = len(expanded)
+        index_map[original_index] = (first_child, last_child)
+        if entry.get("depends_on"):
+            expanded[first_child - 1]["_parent_depends_on"].extend(entry["depends_on"])
+
+    for item in expanded:
+        item["depends_on"].extend(
+            index_map[dep][1] for dep in item.pop("_parent_depends_on")
+        )
+
+    return expanded
+
+
+def _format_param_value(value: Any) -> str:
+    if isinstance(value, str):
+        return f"`{value}`"
+    return f"`{value}`"
+
+
+def _format_template_preview(
+    template_name: str,
+    version: str,
+    resolved_params: Mapping[str, Any],
+    todos: list[dict[str, Any]],
+) -> str:
+    lines = [f"Template `{template_name}` v{version}", ""]
+    if resolved_params:
+        lines.append("Resolved params:")
+        for key, value in resolved_params.items():
+            lines.append(f"- `{key}`: {_format_param_value(value)}")
+        lines.append("")
+    lines.append("Preview:")
+    for index, item in enumerate(todos, start=1):
+        deps = item.get("depends_on", [])
+        dep_suffix = f" (depends on {', '.join(str(dep) for dep in deps)})" if deps else ""
+        lines.append(
+            f"- {index}. [{item.get('priority', 'medium')}] {item['title']}{dep_suffix}"
+        )
+    return "\n".join(lines)
+
+
+def _format_template_apply_result(
+    template_name: str,
+    version: str,
+    resolved_params: Mapping[str, Any],
+    created_items: list[dict[str, Any]],
+) -> str:
+    lines = [
+        f"Applied template `{template_name}` v{version}: created {len(created_items)} todo(s).",
+        "",
+    ]
+    if resolved_params:
+        lines.append("Resolved params:")
+        for key, value in resolved_params.items():
+            lines.append(f"- `{key}`: {_format_param_value(value)}")
+        lines.append("")
+    lines.append("Created:")
+    for item in created_items:
+        lines.append(f"- `{item['id']}` {item['title']}")
+    return "\n".join(lines)
+
+
+def _format_templates_table(templates: list[dict[str, Any]]) -> str:
+    lines = [
+        "| name | version | description | json schema |",
+        "| --- | --- | --- | --- |",
+    ]
+    for template in templates:
+        json_schema = template["json_schema"] or "-"
+        lines.append(
+            f"| `{template['name']}` | `{template['version']}` | {template['description']} | {json_schema} |"
+        )
+    return "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Thread resolution via tool runtime context
 # ══════════════════════════════════════════════════════════════════════
@@ -225,6 +560,8 @@ class WorkloopTodoManager(Toolkit):
                 self.complete_todo,
                 self.list_todos,
                 self.update_todo,
+                self.workloop_apply_template,
+                self.workloop_list_templates,
             ],
         )
 
@@ -602,6 +939,113 @@ class WorkloopTodoManager(Toolkit):
             return f"Updated `{todo_id}`: {', '.join(changes)}{unblocked_msg}"
 
         return _locked_update_json(path, do_update)
+
+    def workloop_apply_template(
+        self,
+        agent: Agent | Team,
+        name: str,
+        params: dict[str, Any],
+        dry_run: bool = False,
+    ) -> str:
+        """Apply a named todo template to the current thread's work plan.
+
+        Args:
+            agent: The calling agent (injected automatically).
+            name: Template name from `templates/<name>.yaml.j2`.
+            params: Template parameters. All required params declared by the
+                template must be present.
+            dry_run: If True, return a preview of the rendered todos without
+                writing `todos.json`.
+
+        Example:
+            workloop_apply_template(
+                name="mindroom-dev",
+                params={"ISSUE_REF": "ISSUE-201", "REPO": "mindroom"},
+            )
+
+        """
+        rendered_template = _render_template_definition(name, params)
+        if dry_run:
+            return _format_template_preview(
+                rendered_template["name"],
+                rendered_template["version"],
+                rendered_template["resolved_params"],
+                rendered_template["todos"],
+            )
+
+        state_root, room_id, thread_id, agent_name = _current_scope(self._runtime_paths)
+        path = _todos_path(state_root, room_id, thread_id)
+
+        def apply_template(data: dict[str, Any]) -> list[dict[str, Any]]:
+            _ensure_thread_state(data, room_id, thread_id)
+            existing_ids = {item["id"] for item in data["items"]}
+            created: list[dict[str, Any]] = []
+            now = _now_iso()
+            for template_todo in rendered_template["todos"]:
+                new_id = _short_id(existing_ids)
+                existing_ids.add(new_id)
+                item = {
+                    "id": new_id,
+                    "title": template_todo["title"],
+                    "status": "open",
+                    "priority": template_todo.get("priority", "medium"),
+                    "depends_on": [],
+                    "assigned_agent": template_todo.get("assigned_agent") or agent_name,
+                    "event_id": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                }
+                created.append(item)
+
+            for item, template_todo in zip(
+                created, rendered_template["todos"], strict=True
+            ):
+                item["depends_on"] = [
+                    created[dep_index - 1]["id"]
+                    for dep_index in template_todo.get("depends_on", [])
+                ]
+
+            data["items"].extend(created)
+            data["updated_at"] = now
+            return created
+
+        created_items = _locked_update_json(path, apply_template)
+        return _format_template_apply_result(
+            rendered_template["name"],
+            rendered_template["version"],
+            rendered_template["resolved_params"],
+            created_items,
+        )
+
+    def workloop_list_templates(
+        self,
+        agent: Agent | Team,
+    ) -> str:
+        """List available workloop templates."""
+        templates: list[dict[str, Any]] = []
+        templates_root = _templates_dir().resolve()
+        for path in sorted(templates_root.glob("*.yaml.j2")):
+            resolved_path = path.resolve()
+            if not resolved_path.is_relative_to(templates_root):
+                raise ValueError(
+                    f"Template '{path.name}' escapes templates dir via symlink"
+                )
+            metadata = _load_template_metadata(path)
+            schema = PARAMS_SCHEMAS.get(metadata["name"])
+            templates.append(
+                {
+                    "name": metadata["name"],
+                    "version": metadata["version"],
+                    "description": metadata["description"],
+                    "json_schema": (
+                        json.dumps(schema.model_json_schema(), sort_keys=True)
+                        if schema is not None
+                        else None
+                    ),
+                }
+            )
+        return _format_templates_table(templates)
 
 
 # ══════════════════════════════════════════════════════════════════════

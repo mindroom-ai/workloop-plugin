@@ -33,16 +33,21 @@ def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     room-level messages), so it is the correct value for replying in-thread.
     """
     room_id = envelope.room_id
-    storage_tid = envelope.target.source_thread_id  # None for room-level, set for threads
-    reply_tid = (
-        envelope.target.resolved_thread_id if envelope.target.source_thread_id else None
-    )
+    target = envelope.target
+    storage_tid = getattr(target, "source_thread_id", getattr(target, "thread_id", None))
+    reply_tid = target.resolved_thread_id if storage_tid else None
     return room_id, storage_tid, reply_tid
 
 
 def response_scope_thread_id(envelope: Any) -> str:
     """Return the actual response-scope thread key for agent-generated work state."""
-    return envelope.target.resolved_thread_id or envelope.target.source_thread_id or "main"
+    target = envelope.target
+    return (
+        target.resolved_thread_id
+        or getattr(target, "source_thread_id", None)
+        or getattr(target, "thread_id", None)
+        or "main"
+    )
 
 
 def now_iso() -> str:
