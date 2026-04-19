@@ -27,6 +27,7 @@ PRIORITY_EMOJI: dict[str, str] = {
 }
 PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 DEFAULT_POKE_INTERVAL_SECONDS = 120
+__all__ = ["ROUTER_AGENT_NAME"]
 
 
 class PokeScanContext(Protocol):

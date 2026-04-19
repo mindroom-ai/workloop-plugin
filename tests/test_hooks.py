@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,7 +14,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-PACKAGE_NAME = f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
+PACKAGE_NAME = (
+    f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
+)
 
 
 def _load_hooks_module():
@@ -603,6 +606,50 @@ async def test_poke_scan_skips_duplicate_message_for_same_scope(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_poke_scan_logs_duplicate_skip_at_debug(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={
+            "poke_interval_seconds": 1,
+            "poke_cooldown_seconds": 0,
+            "recent_response_grace_seconds": 0,
+            "min_idle_before_poke_seconds": 0,
+        },
+        message_sender=message_sender,
+    )
+
+    item = {
+        "id": "dup1",
+        "title": "Collect review results",
+        "status": "open",
+        "priority": "high",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room_threadA", "!room:test", "$threadA", [item])
+
+    await module._run_poke_scan(runtime)
+    caplog.clear()
+
+    with caplog.at_level(logging.DEBUG, logger=module.logger.name):
+        await module._run_poke_scan(runtime)
+
+    duplicate_records = [
+        record
+        for record in caplog.records
+        if "workloop-poke: skipping duplicate poke" in record.getMessage()
+    ]
+    assert len(duplicate_records) == 1
+    assert duplicate_records[0].levelno == logging.DEBUG
+
+
+@pytest.mark.asyncio
 async def test_poke_scan_re_sends_when_message_changes(tmp_path: Path) -> None:
     module = _load_hooks_module()
     message_sender = AsyncMock(return_value="$event")
@@ -659,7 +706,9 @@ async def test_poke_scan_re_sends_when_message_changes(tmp_path: Path) -> None:
     assert pokes1 == 1
     assert pokes2 == 1
     assert message_sender.await_count == 2
-    assert "Collect Round 7 review results" in message_sender.await_args_list[-1].args[1]
+    assert (
+        "Collect Round 7 review results" in message_sender.await_args_list[-1].args[1]
+    )
 
 
 # -- _has_pending_schedules tests --
@@ -837,6 +886,45 @@ def test_should_poke_agent_min_idle_zero_skips_check(tmp_path: Path) -> None:
 
 
 # -- _run_poke_scan skips threads with pending schedules --
+
+
+@pytest.mark.asyncio
+async def test_poke_scan_queries_room_state_once_per_room_per_scan(
+    tmp_path: Path,
+) -> None:
+    module = _load_hooks_module()
+    message_sender = AsyncMock(return_value="$event")
+    room_state_querier = AsyncMock(return_value={})
+    runtime = _make_runtime(
+        module,
+        tmp_path,
+        settings={"poke_interval_seconds": 1, "min_idle_before_poke_seconds": 0},
+        message_sender=message_sender,
+        room_state_querier=room_state_querier,
+    )
+
+    item = {
+        "id": "dd44",
+        "title": "Task D",
+        "status": "open",
+        "priority": "medium",
+        "assigned_agent": "worker",
+        "depends_on": [],
+    }
+
+    _write_thread_todos(tmp_path, "room1_threadA", "!room1:test", "$threadA", [item])
+    _write_thread_todos(tmp_path, "room1_threadB", "!room1:test", "$threadB", [item])
+    _write_thread_todos(tmp_path, "room2_threadC", "!room2:test", "$threadC", [item])
+
+    pokes = await module._run_poke_scan(runtime)
+
+    assert pokes == 3
+    assert room_state_querier.await_count == 2
+    room_ids = sorted(call.args[0] for call in room_state_querier.await_args_list)
+    assert room_ids == ["!room1:test", "!room2:test"]
+    for call in room_state_querier.await_args_list:
+        assert call.args[1] == "com.mindroom.scheduled.task"
+        assert call.args[2] is None
 
 
 @pytest.mark.asyncio

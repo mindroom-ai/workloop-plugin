@@ -146,12 +146,12 @@ def _format_poke_message(
     return "\n".join(lines)
 
 
-async def _has_pending_schedules(
-    ctx: PokeScanContext, room_id: str, thread_id: str | None
-) -> bool:
-    result = await ctx.query_room_state(room_id, "com.mindroom.scheduled.task")
+def _pending_schedule_thread_ids(
+    result: dict[str, Any] | None,
+) -> set[str | None]:
+    pending_thread_ids: set[str | None] = set()
     if result is None:
-        return False
+        return pending_thread_ids
     for _task_id, content in result.items():
         if not isinstance(content, dict):
             continue
@@ -165,9 +165,15 @@ async def _has_pending_schedules(
                 continue
         if not isinstance(workflow, dict):
             continue
-        if workflow.get("thread_id") == thread_id:
-            return True
-    return False
+        pending_thread_ids.add(workflow.get("thread_id"))
+    return pending_thread_ids
+
+
+async def _has_pending_schedules(
+    ctx: PokeScanContext, room_id: str, thread_id: str | None
+) -> bool:
+    result = await ctx.query_room_state(room_id, "com.mindroom.scheduled.task")
+    return thread_id in _pending_schedule_thread_ids(result)
 
 
 async def _run_poke_scan(
@@ -181,6 +187,7 @@ async def _run_poke_scan(
     min_idle = int(ctx.settings.get("min_idle_before_poke_seconds", 600))
     pokes_sent = 0
     configured_agents = set((ctx.config.agents or {}).keys())
+    pending_schedule_threads_by_room: dict[str, set[str | None]] = {}
 
     threads_dir = ctx.state_root / "threads"
     if not threads_dir.exists():
@@ -213,7 +220,14 @@ async def _run_poke_scan(
             room_id = thread_state.get("room_id", "")
             if not room_id:
                 continue
-            if await _has_pending_schedules(ctx, room_id, matrix_thread_id):
+            pending_thread_ids = pending_schedule_threads_by_room.get(room_id)
+            if pending_thread_ids is None:
+                result = await ctx.query_room_state(
+                    room_id, "com.mindroom.scheduled.task"
+                )
+                pending_thread_ids = _pending_schedule_thread_ids(result)
+                pending_schedule_threads_by_room[room_id] = pending_thread_ids
+            if matrix_thread_id in pending_thread_ids:
                 continue
             scope_key = f"{room_id}:{matrix_thread_id or 'main'}"
             if not _should_poke_agent(
@@ -231,7 +245,7 @@ async def _run_poke_scan(
             agent_state = read_agent_state(ctx.state_root, agent_name)
             last_poke_text = agent_state.get("poked_scope_messages", {}).get(scope_key)
             if last_poke_text == poke_text:
-                logger.info(
+                logger.debug(
                     "workloop-poke: skipping duplicate poke for %s in room %s thread %s",
                     agent_name,
                     room_id,
