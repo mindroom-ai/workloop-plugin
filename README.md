@@ -14,6 +14,8 @@ Sometimes an agent stops before the work is actually finished, for example by en
 
 - Per-thread work plans with priorities, dependencies, and optional agent assignment
 - Tool interface for creating, listing, updating, and completing plan items
+- Template interface for materializing protocol-driven plans from `templates/*.yaml.j2`
+- JSON-Schema-backed template params with validation, dry-run previews, and sub-template expansion
 - `!todo` command interface for manual control from chat
 - Reaction-driven completion and cancellation via `✅` and `❌`
 - Prompt enrichment that shows actionable, blocked, and completed work each turn
@@ -23,7 +25,7 @@ Sometimes an agent stops before the work is actually finished, for example by en
 
 ## How It Works
 
-1. An agent creates a work plan with `plan(tasks)` or adds individual items with `add_todo(...)`.
+1. An agent creates a work plan with `plan(tasks)`, adds items with `add_todo(...)`, or applies a named template with `workloop_apply_template(...)`.
 2. Workloop stores the plan as per-thread JSON, including status, priority, dependencies, assignee, and timestamps.
 3. On each turn, the `workloop-context` hook injects the current plan into the prompt.
 4. After a response, `workloop-track-idle` records that the agent is idle again for that thread.
@@ -40,6 +42,31 @@ Toolkit name: `workloop_todo_manager`
 | `complete_todo(todo_id)` | Mark an item done and report any newly unblocked work |
 | `list_todos(show_all=False)` | Show the current plan, optionally including done and cancelled items |
 | `update_todo(todo_id, ...)` | Change title, priority, status, dependencies, or assignee |
+| `workloop_list_templates()` | List available templates with metadata and the JSON Schema for each template's params |
+| `workloop_apply_template(name, params, dry_run=False)` | Render a named template into todos, preview it with `dry_run=True`, or commit it to the current thread |
+
+## Templates
+
+Templates live in `templates/<name>.yaml.j2` and are rendered with Jinja over YAML. They are hot-editable, so adding or revising a template does not require a plugin restart.
+
+Built-in templates:
+
+- `mindroom-dev`: single-issue development protocol with planning, implementation, review loop, live-test gate, and squash-merge steps
+- `parallel-review-loop`: reusable N-reviewer debate loop that can be applied directly or expanded as a sub-template
+
+Template params are validated with Pydantic models in `template_schemas.py`, which gives agents a machine-readable contract and lets `workloop_list_templates()` expose each template's JSON Schema.
+
+Example:
+
+```python
+workloop_apply_template(
+    name="mindroom-dev",
+    params={"ISSUE_REF": "ISSUE-201", "REPO": "mindroom"},
+    dry_run=True,
+)
+```
+
+Use `dry_run=True` to preview the rendered dependency graph before writing `todos.json`.
 
 ## Command Interface
 
