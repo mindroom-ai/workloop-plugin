@@ -141,8 +141,28 @@ restart_auto_poke_loop_on_reload = hook(
 )(restart_auto_poke_loop_on_reload)
 
 
+def _ensure_auto_poke_loop_running(ctx: Any) -> None:
+    """Lazy-start the auto-poke loop if dead.
+
+    `agent:started` (the original starter) only fires once per service boot.
+    Plugin hot-reloads replace the module instance and reset `_AUTO_POKE_TASK`
+    to None without re-emitting `agent:started`, leaving the loop dead until
+    the next service restart. Call this on every router message-receive so
+    the loop self-heals on the very next tick after a reload.
+    """
+    global _AUTO_POKE_TASK
+    if _AUTO_POKE_TASK is not None and not _AUTO_POKE_TASK.done():
+        return
+    runtime = _build_auto_poke_runtime(ctx)
+    _AUTO_POKE_TASK = asyncio.create_task(
+        _auto_poke_loop(runtime), name="workloop-auto-poke"
+    )
+    runtime.logger.info("workloop-auto-poke: lazy-started after reload")
+
+
 async def workloop_command(ctx: Any) -> None:
     """Facade for the command hook that preserves local test patching."""
+    _ensure_auto_poke_loop_running(ctx)
     body = ctx.envelope.body.strip()
     if body == "!workloop-tick":
         room_id, _, reply_tid = state.resolve_scope(ctx.envelope)
@@ -188,6 +208,7 @@ __all__ = [
     "formatting",
     "inject_todos",
     "logger",
+    "_ensure_auto_poke_loop_running",
     "poke",
     "restart_auto_poke_loop_on_reload",
     "start_auto_poke_loop",

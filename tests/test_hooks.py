@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
@@ -78,6 +79,9 @@ class MessageContextStub:
     send_message: AsyncMock
     suppress: bool = False
     query_room_state: AsyncMock | None = None
+    message_sender: Any = None
+    room_state_querier: Any = None
+    logger: Any = None
 
     @property
     def state_root(self) -> Path:
@@ -293,6 +297,89 @@ async def test_router_stop_does_not_clear_newer_task(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workloop_command_lazy_starts_loop_when_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISSUE-182: every router message must self-heal a dead auto-poke loop."""
+    module = _load_hooks_module()
+    monkeypatch.setattr(module, "_AUTO_POKE_TASK", None)
+    run_scan = AsyncMock(return_value=0)
+    monkeypatch.setattr(module, "_run_poke_scan", run_scan)
+
+    stop_event = asyncio.Event()
+
+    async def fake_loop(_runtime: object) -> None:
+        await stop_event.wait()
+
+    monkeypatch.setattr(module, "_auto_poke_loop", fake_loop)
+
+    ctx = MessageContextStub(
+        envelope=EnvelopeStub(body="!todo list"),  # any body — lazy-start runs first
+        settings={},
+        config=_make_config(agents={"worker": object()}),
+        _state_root=tmp_path,
+        send_message=AsyncMock(return_value="$reply"),
+        logger=Mock(),
+    )
+
+    try:
+        # Bypass the !todo handler by mocking commands.workloop_command
+        monkeypatch.setattr(module.commands, "workloop_command", AsyncMock())
+        await module.workloop_command(ctx)
+        assert module._AUTO_POKE_TASK is not None, (
+            "lazy-start must create the task on first router message after reload"
+        )
+        assert not module._AUTO_POKE_TASK.done()
+    finally:
+        stop_event.set()
+        if module._AUTO_POKE_TASK is not None:
+            module._AUTO_POKE_TASK.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await module._AUTO_POKE_TASK
+            module._AUTO_POKE_TASK = None
+
+
+@pytest.mark.asyncio
+async def test_workloop_command_lazy_start_is_noop_when_loop_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a healthy task already exists, lazy-start must not spawn a duplicate."""
+    module = _load_hooks_module()
+
+    stop_event = asyncio.Event()
+
+    async def fake_loop(_runtime: object) -> None:
+        await stop_event.wait()
+
+    monkeypatch.setattr(module, "_auto_poke_loop", fake_loop)
+
+    existing = asyncio.create_task(fake_loop(None))
+    monkeypatch.setattr(module, "_AUTO_POKE_TASK", existing)
+
+    ctx = MessageContextStub(
+        envelope=EnvelopeStub(body="!todo list"),
+        settings={},
+        config=_make_config(agents={"worker": object()}),
+        _state_root=tmp_path,
+        send_message=AsyncMock(return_value="$reply"),
+        logger=Mock(),
+    )
+
+    try:
+        monkeypatch.setattr(module.commands, "workloop_command", AsyncMock())
+        await module.workloop_command(ctx)
+        # Existing task untouched
+        assert module._AUTO_POKE_TASK is existing
+        assert not existing.done()
+    finally:
+        stop_event.set()
+        existing.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await existing
+        monkeypatch.setattr(module, "_AUTO_POKE_TASK", None)
+
+
+@pytest.mark.asyncio
 async def test_config_reloaded_restarts_loop_when_task_is_dead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -490,6 +577,15 @@ async def test_manual_workloop_tick_still_runs_one_shot_scan(
     module = _load_hooks_module()
     run_scan = AsyncMock(return_value=2)
     monkeypatch.setattr(module, "_run_poke_scan", run_scan)
+    # Lazy-start path now runs on every workloop_command — stub the loop so
+    # the synthetic task doesn't actually try to scan and doesn't leak.
+    stop_event = asyncio.Event()
+
+    async def fake_loop(_runtime: object) -> None:
+        await stop_event.wait()
+
+    monkeypatch.setattr(module, "_auto_poke_loop", fake_loop)
+    monkeypatch.setattr(module, "_AUTO_POKE_TASK", None)
     send_message = AsyncMock(return_value="$reply")
     ctx = MessageContextStub(
         envelope=EnvelopeStub(body="!workloop-tick"),
@@ -497,6 +593,7 @@ async def test_manual_workloop_tick_still_runs_one_shot_scan(
         config=_make_config(agents={"worker": object()}),
         _state_root=tmp_path,
         send_message=send_message,
+        logger=Mock(),
     )
 
     await module.workloop_command(ctx)
