@@ -8,7 +8,7 @@ from typing import Any
 from mindroom.hooks import ReactionReceivedContext, hook
 
 from .state import locked_update_json, now_iso, read_json
-from .types import TERMINAL_STATUSES, logger
+from .runtime import TERMINAL_STATUSES, logger
 
 
 def read_todos(path: Path) -> dict[str, Any]:

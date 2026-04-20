@@ -6,8 +6,8 @@ import asyncio
 from typing import Any
 
 from mindroom.hooks import hook
-from . import commands, formatting, poke, state, todos, types as workloop_types
-from .types import (
+from . import commands, formatting, poke, runtime as workloop_runtime, state, todos
+from .runtime import (
     AutoPokeRuntime,
     DEFAULT_POKE_INTERVAL_SECONDS,
     ROUTER_AGENT_NAME,
@@ -169,5 +169,5 @@ __all__ = [
     "track_idle",
     "workloop_command",
     "workloop_react",
-    "workloop_types",
+    "workloop_runtime",
 ]

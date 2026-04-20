@@ -27,7 +27,7 @@ from .state import (
     todos_path,
 )
 from .todos import is_actionable, is_blocked, read_todos
-from .types import (
+from .runtime import (
     AutoPokeRuntime,
     DEFAULT_POKE_INTERVAL_SECONDS,
     PRIORITY_EMOJI,

@@ -10,7 +10,7 @@ from .formatting import format_list, format_plan
 from .poke import run_poke_scan
 from .state import locked_update_json, now_iso, resolve_scope, short_id, todos_path
 from .todos import ensure_thread_state, newly_unblocked, read_todos, would_create_cycle
-from .types import (
+from .runtime import (
     PRIORITY_EMOJI,
     ROUTER_AGENT_NAME,
     TERMINAL_STATUSES,

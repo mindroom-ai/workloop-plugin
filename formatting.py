@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .todos import is_actionable, is_blocked
-from .types import PRIORITY_EMOJI, PRIORITY_ORDER, TERMINAL_STATUSES
+from .runtime import PRIORITY_EMOJI, PRIORITY_ORDER, TERMINAL_STATUSES
 
 
 def format_item_line(item: dict[str, Any], *, show_status: bool = False) -> str:
