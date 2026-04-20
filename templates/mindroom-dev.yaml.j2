@@ -47,7 +47,7 @@ todos:
     priority: high
 
   # 11a-11b. Commit message + safe squash merge.
-  - title: "Author commit message at /tmp/{{ ISSUE_REF }}-commit-msg.txt — body MUST contain problem/approach/why/how, NO test counts, NO reviewer names, NO file enumerations (gate: file exists, body ≥3 paragraphs)"
+  - title: "Author commit message at /tmp/{{ ISSUE_REF }}-commit-msg.txt — body MUST contain problem/approach/why/how, NO test counts, NO reviewer names, NO file enumerations. FORMAT: subject line ≤72 chars; body is one sentence per line (no fixed-width wrapping at 72/80 cols, no manual reflow); blank line between paragraphs (gate: file exists, body ≥3 paragraphs, no body line is a hard-wrapped continuation of the previous one)"
     depends_on: [8, 10]
     priority: high
   - title: "Run skills/mindroom-dev/scripts/safe-squash-merge.sh -F /tmp/{{ ISSUE_REF }}-commit-msg.txt {{ BRANCH }} (gate: script exit 0)"
