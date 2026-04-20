@@ -113,6 +113,34 @@ stop_auto_poke_loop = hook(
 )(stop_auto_poke_loop)
 
 
+async def restart_auto_poke_loop_on_reload(ctx: Any) -> None:
+    """Restart the auto-poke loop after plugin hot-reload kills the prior task.
+
+    `agent:started` only fires once per service boot, so plugin reloads (which
+    replace the module instance and reset `_AUTO_POKE_TASK = None`) leave the
+    loop dead until the service restarts. `config:reloaded` fires on every
+    reload, so this hook re-creates the task idempotently.
+    """
+    global _AUTO_POKE_TASK
+
+    if _AUTO_POKE_TASK is not None and not _AUTO_POKE_TASK.done():
+        return
+
+    runtime = _build_auto_poke_runtime(ctx)
+    _AUTO_POKE_TASK = asyncio.create_task(
+        _auto_poke_loop(runtime), name="workloop-auto-poke"
+    )
+    runtime.logger.info("workloop-auto-poke: started (after config reload)")
+
+
+restart_auto_poke_loop_on_reload = hook(
+    event="config:reloaded",
+    name="workloop-auto-poke-restart-on-reload",
+    priority=100,
+    timeout_ms=5000,
+)(restart_auto_poke_loop_on_reload)
+
+
 async def workloop_command(ctx: Any) -> None:
     """Facade for the command hook that preserves local test patching."""
     body = ctx.envelope.body.strip()
@@ -161,6 +189,7 @@ __all__ = [
     "inject_todos",
     "logger",
     "poke",
+    "restart_auto_poke_loop_on_reload",
     "start_auto_poke_loop",
     "state",
     "stop_auto_poke_loop",

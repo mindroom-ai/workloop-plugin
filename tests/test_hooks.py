@@ -293,6 +293,78 @@ async def test_router_stop_does_not_clear_newer_task(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_config_reloaded_restarts_loop_when_task_is_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISSUE-182: plugin hot-reload kills _AUTO_POKE_TASK; config:reloaded must restart it."""
+    module = _load_hooks_module()
+    monkeypatch.setattr(module, "_AUTO_POKE_TASK", None)
+
+    stop_event = asyncio.Event()
+
+    async def fake_loop(_runtime: object) -> None:
+        await stop_event.wait()
+
+    monkeypatch.setattr(module, "_auto_poke_loop", fake_loop)
+
+    created_tasks: list[asyncio.Task[None]] = []
+    real_create_task = asyncio.create_task
+
+    def record_create_task(coro: object, **kwargs: object) -> asyncio.Task[None]:
+        task = real_create_task(coro, **kwargs)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", record_create_task)
+
+    # ConfigReloadedContext has the same shape we read (settings, config, state_root,
+    # logger, message_sender, room_state_querier) so the lifecycle stub is fine.
+    ctx = _make_lifecycle_context(tmp_path, entity_name="")
+    try:
+        await module.restart_auto_poke_loop_on_reload(ctx)
+        assert len(created_tasks) == 1
+        assert module._AUTO_POKE_TASK is created_tasks[0]
+    finally:
+        stop_event.set()
+        await module.stop_auto_poke_loop(
+            _make_lifecycle_context(tmp_path, entity_name=module.ROUTER_AGENT_NAME)
+        )
+
+
+@pytest.mark.asyncio
+async def test_config_reloaded_is_noop_when_loop_already_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a healthy task already exists, restart hook must not spawn a duplicate."""
+    module = _load_hooks_module()
+
+    stop_event = asyncio.Event()
+
+    async def fake_loop(_runtime: object) -> None:
+        await stop_event.wait()
+
+    monkeypatch.setattr(module, "_auto_poke_loop", fake_loop)
+
+    existing = asyncio.create_task(fake_loop(None))
+    monkeypatch.setattr(module, "_AUTO_POKE_TASK", existing)
+
+    create_task_mock = Mock(side_effect=AssertionError("must not create a second task"))
+    monkeypatch.setattr(asyncio, "create_task", create_task_mock)
+
+    ctx = _make_lifecycle_context(tmp_path, entity_name="")
+    try:
+        await module.restart_auto_poke_loop_on_reload(ctx)
+        assert module._AUTO_POKE_TASK is existing
+        create_task_mock.assert_not_called()
+    finally:
+        stop_event.set()
+        existing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await existing
+        monkeypatch.setattr(module, "_AUTO_POKE_TASK", None)
+
+
+@pytest.mark.asyncio
 async def test_auto_poke_loop_calls_scan_on_interval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
