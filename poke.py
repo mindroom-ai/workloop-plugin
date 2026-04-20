@@ -61,6 +61,30 @@ def _clear_active_run(
     locked_update_json(path, _remove_active_run)
 
 
+def _parse_started_at(run_info: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(run_info["started_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _prune_stale_active_runs(
+    state_root: Path, agent_name: str, now: datetime, cutoff_seconds: int
+) -> None:
+    def _mutate(state):
+        active_runs = state.get("active_runs", {})
+        if not isinstance(active_runs, dict):
+            return
+        state["active_runs"] = {
+            scope: info
+            for scope, info in active_runs.items()
+            if (started_at := _parse_started_at(info)) is not None
+            and (now - started_at).total_seconds() < cutoff_seconds
+        }
+
+    locked_update_json(agent_state_path(state_root, agent_name), _mutate)
+
+
 def _should_poke_agent(
     state_root: Path,
     agent_name: str,
@@ -76,12 +100,14 @@ def _should_poke_agent(
 
     # Check active runs — agent is busy if any non-stale runs exist
     active_runs: dict[str, Any] = state.get("active_runs", {})
-    for _scope, run_info in list(active_runs.items()):
-        started = run_info.get("started_at")
-        if started is None:
+    for scope, run_info in active_runs.items():
+        if scope_key is not None and scope != scope_key:
             continue
-        if (now - datetime.fromisoformat(started)).total_seconds() < stale_busy:
-            return False  # At least one fresh active run → agent is busy
+        started_at = _parse_started_at(run_info)
+        if started_at is None:
+            continue
+        if (now - started_at).total_seconds() < stale_busy:
+            return False
 
     # Minimum idle time: don't poke unless the agent has been idle long enough.
     if min_idle > 0:
@@ -188,6 +214,9 @@ async def _run_poke_scan(
     pokes_sent = 0
     configured_agents = set((ctx.config.agents or {}).keys())
     pending_schedule_threads_by_room: dict[str, set[str | None]] = {}
+    for agent_name in ctx.config.agents or {}:
+        # Keep a grace buffer past stale_busy so barely-stale runs are not pruned as zombies.
+        _prune_stale_active_runs(ctx.state_root, agent_name, now, stale_busy * 2)
 
     threads_dir = ctx.state_root / "threads"
     if not threads_dir.exists():
