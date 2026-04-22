@@ -19,6 +19,7 @@ _run_poke_scan = poke.run_poke_scan
 _parse_poke_interval_seconds = poke._parse_poke_interval_seconds
 _build_auto_poke_runtime = poke._build_auto_poke_runtime
 _has_pending_schedules = poke._has_pending_schedules
+_read_latest_thread_message = poke._read_latest_thread_message
 _should_poke_agent = poke._should_poke_agent
 
 _AUTO_POKE_TASK: asyncio.Task[None] | None = None
@@ -188,7 +189,6 @@ workloop_command = hook(
 
 inject_todos = poke.inject_todos
 track_idle = poke.track_idle
-track_cancelled = poke.track_cancelled
 workloop_react = todos.workloop_react
 
 __all__ = [
@@ -201,6 +201,7 @@ __all__ = [
     "_build_auto_poke_runtime",
     "_has_pending_schedules",
     "_parse_poke_interval_seconds",
+    "_read_latest_thread_message",
     "_run_poke_scan",
     "_should_poke_agent",
     "auto_poke",
@@ -215,7 +216,6 @@ __all__ = [
     "state",
     "stop_auto_poke_loop",
     "todos",
-    "track_cancelled",
     "track_idle",
     "workloop_command",
     "workloop_react",

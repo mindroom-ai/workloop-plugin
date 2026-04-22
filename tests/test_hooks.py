@@ -5,7 +5,7 @@ import contextlib
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import util
 from pathlib import Path
@@ -33,11 +33,38 @@ def _load_hooks_module():
     return module
 
 
+@dataclass(frozen=True)
+class CacheConfigStub:
+    db_path: Path
+
+    def resolve_db_path(self, _runtime_paths: Any) -> Path:
+        return self.db_path
+
+
+@dataclass(frozen=True)
+class RuntimePathsStub:
+    storage_root: Path
+
+    def env_value(self, _name: str, *, default: str | None = None) -> str | None:
+        return default
+
+
+@dataclass
+class ConfigStub:
+    agents: dict[str, Any]
+    cache: CacheConfigStub
+
+    def get_domain(self, _runtime_paths: Any) -> str:
+        return "test"
+
+
 @dataclass
 class LifecycleContextStub:
     settings: dict[str, Any]
     config: Any
     _state_root: Path
+    runtime_paths: Any
+    runtime_started_at: float | None
     logger: Any
     send_message: AsyncMock
     message_sender: AsyncMock | None
@@ -77,6 +104,10 @@ class MessageContextStub:
     config: Any
     _state_root: Path
     send_message: AsyncMock
+    runtime_paths: Any = field(
+        default_factory=lambda: RuntimePathsStub(Path("."))
+    )
+    runtime_started_at: float | None = 0.0
     suppress: bool = False
     query_room_state: AsyncMock | None = None
     message_sender: Any = None
@@ -89,7 +120,10 @@ class MessageContextStub:
 
 
 def _make_config(*, agents: dict[str, Any] | None = None) -> Any:
-    return SimpleNamespace(agents=agents or {})
+    return ConfigStub(
+        agents=agents or {},
+        cache=CacheConfigStub(Path("event_cache.db")),
+    )
 
 
 def _make_lifecycle_context(
@@ -101,8 +135,13 @@ def _make_lifecycle_context(
 ) -> LifecycleContextStub:
     return LifecycleContextStub(
         settings=settings or {},
-        config=_make_config(agents=agents),
+        config=ConfigStub(
+            agents=agents or {},
+            cache=CacheConfigStub(tmp_path / "event_cache.db"),
+        ),
         _state_root=tmp_path,
+        runtime_paths=RuntimePathsStub(tmp_path),
+        runtime_started_at=0.0,
         logger=Mock(),
         send_message=AsyncMock(return_value="$event"),
         message_sender=AsyncMock(return_value="$event"),
@@ -120,8 +159,13 @@ def _make_runtime(
 ):
     return module.AutoPokeRuntime(
         settings=settings or {"poke_interval_seconds": 1},
-        config=_make_config(agents={"worker": object()}),
+        config=ConfigStub(
+            agents={"worker": object()},
+            cache=CacheConfigStub(tmp_path / "event_cache.db"),
+        ),
         state_root=tmp_path,
+        runtime_paths=RuntimePathsStub(tmp_path),
+        runtime_started_at=0.0,
         logger=Mock(),
         _message_sender=message_sender or AsyncMock(return_value="$event"),
         _room_state_querier=room_state_querier,
@@ -1000,9 +1044,14 @@ async def test_has_pending_schedules_ignores_malformed_workflow(tmp_path: Path) 
 # -- _should_poke_agent min_idle tests --
 
 
-def test_should_poke_agent_respects_min_idle(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_should_poke_agent_respects_min_idle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+    runtime = _make_runtime(module, tmp_path)
+    monkeypatch.setattr(module.poke, "_read_latest_thread_message", AsyncMock(return_value=None))
 
     # Agent responded 5 minutes ago, min_idle is 10 minutes → should NOT poke
     agents_dir = tmp_path / "agents"
@@ -1012,15 +1061,27 @@ def test_should_poke_agent_respects_min_idle(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(
-        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600
+    result = await module._should_poke_agent(
+        runtime,
+        "worker",
+        "!room:test",
+        "$threadA",
+        now,
+        cooldown=300,
+        grace=30,
+        min_idle=600,
     )
     assert result is False
 
 
-def test_should_poke_agent_min_idle_expired(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_should_poke_agent_min_idle_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+    runtime = _make_runtime(module, tmp_path)
+    monkeypatch.setattr(module.poke, "_read_latest_thread_message", AsyncMock(return_value=None))
 
     # Agent responded 15 minutes ago, min_idle is 10 minutes → should poke
     agents_dir = tmp_path / "agents"
@@ -1030,15 +1091,27 @@ def test_should_poke_agent_min_idle_expired(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(
-        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=600
+    result = await module._should_poke_agent(
+        runtime,
+        "worker",
+        "!room:test",
+        "$threadA",
+        now,
+        cooldown=300,
+        grace=30,
+        min_idle=600,
     )
     assert result is True
 
 
-def test_should_poke_agent_min_idle_zero_skips_check(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_should_poke_agent_min_idle_zero_skips_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = _load_hooks_module()
     now = datetime(2026, 3, 31, 12, 0, 0, tzinfo=UTC)
+    runtime = _make_runtime(module, tmp_path)
+    monkeypatch.setattr(module.poke, "_read_latest_thread_message", AsyncMock(return_value=None))
 
     # Agent responded 1 minute ago, min_idle=0 (disabled) → should poke (grace=30s already passed)
     agents_dir = tmp_path / "agents"
@@ -1048,8 +1121,15 @@ def test_should_poke_agent_min_idle_zero_skips_check(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = module._should_poke_agent(
-        tmp_path, "worker", now, cooldown=300, grace=30, stale_busy=600, min_idle=0
+    result = await module._should_poke_agent(
+        runtime,
+        "worker",
+        "!room:test",
+        "$threadA",
+        now,
+        cooldown=300,
+        grace=30,
+        min_idle=0,
     )
     assert result is True
 
