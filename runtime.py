@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -35,8 +34,6 @@ class PokeScanContext(Protocol):
     settings: dict[str, Any]
     config: Any
     state_root: Path
-    runtime_paths: Any
-    runtime_started_at: float | None
 
     async def send_message(
         self,
@@ -56,19 +53,11 @@ class PokeScanContext(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class ThreadMessageSnapshot:
-    content: dict[str, Any]
-    origin_server_ts: datetime
-
-
 @dataclass(slots=True)
 class AutoPokeRuntime:
     settings: dict[str, Any]
     config: Any
     state_root: Path
-    runtime_paths: Any
-    runtime_started_at: float | None
     logger: Any
     _message_sender: HookMessageSender | None
     _room_state_querier: HookRoomStateQuerier | None

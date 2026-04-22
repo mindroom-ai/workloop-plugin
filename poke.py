@@ -8,16 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mindroom.constants import STREAM_STATUS_KEY, STREAM_STATUS_STREAMING
 from mindroom.hooks import (
     AfterResponseContext,
     AgentLifecycleContext,
+    CancelledResponseContext,
     EnrichmentItem,
     MessageEnrichContext,
     hook,
 )
-from mindroom.matrix.cache import get_latest_agent_message_snapshot
-from mindroom.matrix.identity import MatrixID
 
 from .state import (
     agent_state_path,
@@ -35,106 +33,81 @@ from .runtime import (
     PRIORITY_EMOJI,
     PRIORITY_ORDER,
     PokeScanContext,
+    ROUTER_AGENT_NAME,
     TERMINAL_STATUSES,
-    ThreadMessageSnapshot,
+    _PLUGIN_NAME,
     logger,
 )
 
-STREAM_STATUS_SANITY_TIMEOUT_SECONDS = 1800
+_AUTO_POKE_TASK: asyncio.Task[None] | None = None
 
 
-async def _read_latest_thread_message(
-    ctx: PokeScanContext,
-    room_id: str,
-    thread_id: str | None,
-    sender: str,
-) -> ThreadMessageSnapshot | None:
-    reader = getattr(ctx, "read_latest_thread_message", None)
-    if callable(reader):
-        return await reader(room_id, thread_id, sender)
-    cache_config = getattr(ctx.config, "cache", None)
-    if cache_config is not None and hasattr(cache_config, "resolve_db_path"):
-        db_path = cache_config.resolve_db_path(ctx.runtime_paths)
-    else:
-        db_path = ctx.runtime_paths.storage_root / "event_cache.db"
-    snapshot = await asyncio.to_thread(
-        get_latest_agent_message_snapshot,
-        db_path=db_path,
-        room_id=room_id,
-        thread_id=thread_id,
-        sender=sender,
-        runtime_started_at=getattr(ctx, "runtime_started_at", None),
-    )
-    if snapshot is None:
+def _clear_active_run(
+    state_root: Path,
+    agent_name: str,
+    run_key: str,
+    *,
+    record_last_response: bool,
+) -> None:
+    path = agent_state_path(state_root, agent_name)
+
+    def _remove_active_run(data: dict[str, Any]) -> None:
+        active_runs = data.get("active_runs", {})
+        active_runs.pop(run_key, None)
+        data["active_runs"] = active_runs
+        if record_last_response:
+            data["last_response_at"] = now_iso()
+
+    locked_update_json(path, _remove_active_run)
+
+
+def _parse_started_at(run_info: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(run_info["started_at"])
+    except (KeyError, TypeError, ValueError):
         return None
-    return ThreadMessageSnapshot(
-        content=snapshot.content,
-        origin_server_ts=datetime.fromtimestamp(
-            snapshot.origin_server_ts / 1000,
-            tz=UTC,
-        ),
-    )
 
 
-def _agent_matrix_user_id(ctx: PokeScanContext, agent_name: str) -> str:
-    domain = ctx.config.get_domain(ctx.runtime_paths)
-    return MatrixID.from_agent(agent_name, domain, ctx.runtime_paths).full_id
-
-
-def _record_last_response(state_root: Path, agent_name: str) -> None:
-    def _mutate(data: dict[str, Any]) -> None:
-        if not data:
-            data["agent_name"] = agent_name
-        if "is_busy" in data:
-            data.pop("is_busy", None)
-            data.pop("last_message_at", None)
-            data.pop("current_room_id", None)
-            data.pop("current_thread_id", None)
-        data.setdefault("poked_scopes", {})
-        data.setdefault("poked_scope_messages", {})
-        data["last_response_at"] = now_iso()
+def _prune_stale_active_runs(
+    state_root: Path, agent_name: str, now: datetime, cutoff_seconds: int
+) -> None:
+    def _mutate(state):
+        active_runs = state.get("active_runs", {})
+        if not isinstance(active_runs, dict):
+            return
+        state["active_runs"] = {
+            scope: info
+            for scope, info in active_runs.items()
+            if (started_at := _parse_started_at(info)) is not None
+            and (now - started_at).total_seconds() < cutoff_seconds
+        }
 
     locked_update_json(agent_state_path(state_root, agent_name), _mutate)
 
 
-async def _should_poke_agent(
-    ctx: PokeScanContext,
+def _should_poke_agent(
+    state_root: Path,
     agent_name: str,
-    room_id: str,
-    thread_id: str | None,
     now: datetime,
     cooldown: int,
     grace: int,
+    stale_busy: int,
     *,
     scope_key: str | None = None,
     min_idle: int = 0,
 ) -> bool:
-    try:
-        last_message = await _read_latest_thread_message(
-            ctx,
-            room_id,
-            thread_id,
-            _agent_matrix_user_id(ctx, agent_name),
-        )
-    except Exception:
-        logger.warning(
-            "workloop-poke: latest message snapshot read failed for %s in room %s thread %s",
-            agent_name,
-            room_id,
-            thread_id,
-            exc_info=True,
-        )
-        return False
-    if last_message is not None:
-        stream_status = last_message.content.get(STREAM_STATUS_KEY)
-        age_seconds = (now - last_message.origin_server_ts).total_seconds()
-        if (
-            stream_status == STREAM_STATUS_STREAMING
-            and age_seconds < STREAM_STATUS_SANITY_TIMEOUT_SECONDS
-        ):
-            return False
+    state = read_agent_state(state_root, agent_name)
 
-    state = read_agent_state(ctx.state_root, agent_name)
+    # Check active runs — agent is busy if any non-stale runs exist
+    active_runs: dict[str, Any] = state.get("active_runs", {})
+    for scope, run_info in active_runs.items():
+        if scope_key is not None and scope != scope_key:
+            continue
+        started_at = _parse_started_at(run_info)
+        if started_at is None:
+            continue
+        if (now - started_at).total_seconds() < stale_busy:
+            return False
 
     # Minimum idle time: don't poke unless the agent has been idle long enough.
     if min_idle > 0:
@@ -235,11 +208,15 @@ async def _run_poke_scan(
     now = datetime.now(UTC)
     cooldown = int(ctx.settings.get("poke_cooldown_seconds", 300))
     grace = int(ctx.settings.get("recent_response_grace_seconds", 30))
+    stale_busy = int(ctx.settings.get("stale_busy_seconds", 600))
     max_pokes = int(ctx.settings.get("max_pokes_per_tick", 3))
     min_idle = int(ctx.settings.get("min_idle_before_poke_seconds", 600))
     pokes_sent = 0
     configured_agents = set((ctx.config.agents or {}).keys())
     pending_schedule_threads_by_room: dict[str, set[str | None]] = {}
+    for agent_name in ctx.config.agents or {}:
+        # Keep a grace buffer past stale_busy so barely-stale runs are not pruned as zombies.
+        _prune_stale_active_runs(ctx.state_root, agent_name, now, stale_busy * 2)
 
     threads_dir = ctx.state_root / "threads"
     if not threads_dir.exists():
@@ -282,14 +259,13 @@ async def _run_poke_scan(
             if matrix_thread_id in pending_thread_ids:
                 continue
             scope_key = f"{room_id}:{matrix_thread_id or 'main'}"
-            if not await _should_poke_agent(
-                ctx,
+            if not _should_poke_agent(
+                ctx.state_root,
                 agent_name,
-                room_id,
-                matrix_thread_id,
                 now,
                 cooldown,
                 grace,
+                stale_busy,
                 scope_key=scope_key,
                 min_idle=min_idle,
             ):
@@ -346,17 +322,85 @@ def _parse_poke_interval_seconds(settings: dict[str, Any], runtime_logger: Any) 
         return DEFAULT_POKE_INTERVAL_SECONDS
 
 
+async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
+    runtime.logger.info("workloop-auto-poke: started")
+    try:
+        while True:
+            # Read the interval each cycle so a hot-reloaded setting does not leave a stale sleep cadence behind.
+            interval = _parse_poke_interval_seconds(runtime.settings, runtime.logger)
+            try:
+                await asyncio.sleep(interval)
+                pokes = await _run_poke_scan(runtime)
+                runtime.logger.info(
+                    "workloop-auto-poke: scan complete, %d poke(s) sent", pokes
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                runtime.logger.exception("workloop-auto-poke: scan failed; continuing")
+    except asyncio.CancelledError:
+        runtime.logger.info("workloop-auto-poke: stopped")
+        raise
+
+
 def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
     return AutoPokeRuntime(
         settings=ctx.settings,
         config=ctx.config,
         state_root=ctx.state_root,
-        runtime_paths=ctx.runtime_paths,
-        runtime_started_at=getattr(ctx, "runtime_started_at", None),
         logger=ctx.logger,
         _message_sender=ctx.message_sender,
         _room_state_querier=ctx.room_state_querier,
     )
+
+
+@hook(
+    event="agent:started",
+    name="workloop-auto-poke-start",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)
+async def start_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
+    """Start the background auto-poke loop once per router lifecycle."""
+    global _AUTO_POKE_TASK
+
+    if ctx.entity_name != ROUTER_AGENT_NAME:
+        return
+    if _AUTO_POKE_TASK is not None and not _AUTO_POKE_TASK.done():
+        return
+
+    runtime = _build_auto_poke_runtime(ctx)
+    _AUTO_POKE_TASK = asyncio.create_task(
+        _auto_poke_loop(runtime), name=f"{_PLUGIN_NAME}-auto-poke"
+    )
+
+
+@hook(
+    event="agent:stopped",
+    name="workloop-auto-poke-stop",
+    agents=(ROUTER_AGENT_NAME,),
+    priority=100,
+    timeout_ms=5000,
+)
+async def stop_auto_poke_loop(ctx: AgentLifecycleContext) -> None:
+    """Cancel the background auto-poke loop when the router stops."""
+    global _AUTO_POKE_TASK
+
+    if ctx.entity_name != ROUTER_AGENT_NAME:
+        return
+    task = _AUTO_POKE_TASK
+    if task is None:
+        return
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if _AUTO_POKE_TASK is task:
+            _AUTO_POKE_TASK = None
 
 
 @hook(
@@ -365,9 +409,24 @@ def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
     priority=50,
 )
 async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
-    """Inject the current thread work plan into agent context."""
+    """Inject thread work plan and mark target agent busy."""
+    agent_name = ctx.target_entity_name
     room_id = ctx.envelope.room_id
     thread_id = response_scope_thread_id(ctx.envelope)
+
+    # Mark agent as busy for this scope
+    run_key = f"{room_id}:{thread_id}"
+    try:
+
+        def _add_active_run(data: dict[str, Any]) -> None:
+            data.setdefault("active_runs", {})[run_key] = {"started_at": now_iso()}
+
+        path = agent_state_path(ctx.state_root, agent_name)
+        locked_update_json(path, _add_active_run)
+    except Exception:
+        logger.exception(
+            "workloop-context: failed to update agent state for %s", agent_name
+        )
 
     # Load thread plan
     path = todos_path(ctx.state_root, room_id, thread_id)
@@ -439,11 +498,45 @@ async def inject_todos(ctx: MessageEnrichContext) -> list[EnrichmentItem]:
     timeout_ms=3000,
 )
 async def track_idle(ctx: AfterResponseContext) -> None:
-    """Record the agent's most recent response time for idle gating."""
+    """Remove the active run for this scope and record last response time."""
     agent_name = ctx.result.envelope.agent_name
+    room_id = ctx.result.envelope.room_id
+    thread_id = response_scope_thread_id(ctx.result.envelope)
+    run_key = f"{room_id}:{thread_id}"
     try:
-        _record_last_response(ctx.state_root, agent_name)
+        _clear_active_run(
+            ctx.state_root,
+            agent_name,
+            run_key,
+            record_last_response=True,
+        )
     except Exception:
         logger.exception(
             "workloop-track-idle: failed to update agent state for %s", agent_name
+        )
+
+
+@hook(
+    event="message:cancelled",
+    name="workloop-track-cancelled",
+    priority=100,
+    timeout_ms=3000,
+)
+async def track_cancelled(ctx: CancelledResponseContext) -> None:
+    """Remove the active run for this scope without recording a response timestamp."""
+    agent_name = ctx.info.envelope.agent_name
+    room_id = ctx.info.envelope.room_id
+    thread_id = response_scope_thread_id(ctx.info.envelope)
+    run_key = f"{room_id}:{thread_id}"
+    try:
+        _clear_active_run(
+            ctx.state_root,
+            agent_name,
+            run_key,
+            record_last_response=False,
+        )
+    except Exception:
+        logger.exception(
+            "workloop-track-cancelled: failed to update agent state for %s",
+            agent_name,
         )
