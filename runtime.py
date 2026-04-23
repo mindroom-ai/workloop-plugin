@@ -30,10 +30,24 @@ DEFAULT_POKE_INTERVAL_SECONDS = 120
 __all__ = ["ROUTER_AGENT_NAME"]
 
 
+class AgentMessageSnapshotLike(Protocol):
+    content: dict[str, Any]
+    origin_server_ts: int
+
+
 class PokeScanContext(Protocol):
     settings: dict[str, Any]
     config: Any
     state_root: Path
+    runtime_paths: Any
+
+    async def read_agent_message_snapshot(
+        self,
+        room_id: str,
+        sender: str,
+        *,
+        thread_id: str | None = None,
+    ) -> AgentMessageSnapshotLike | None: ...
 
     async def send_message(
         self,
@@ -58,9 +72,29 @@ class AutoPokeRuntime:
     settings: dict[str, Any]
     config: Any
     state_root: Path
+    runtime_paths: Any
     logger: Any
     _message_sender: HookMessageSender | None
+    _agent_message_snapshot_reader: Any | None
     _room_state_querier: HookRoomStateQuerier | None
+
+    async def read_agent_message_snapshot(
+        self,
+        room_id: str,
+        sender: str,
+        *,
+        thread_id: str | None = None,
+    ) -> AgentMessageSnapshotLike | None:
+        if self._agent_message_snapshot_reader is None:
+            self.logger.warning(
+                "workloop-auto-poke: read_agent_message_snapshot called but no reader registered"
+            )
+            return None
+        return await self._agent_message_snapshot_reader(
+            room_id,
+            sender,
+            thread_id=thread_id,
+        )
 
     async def send_message(
         self,
