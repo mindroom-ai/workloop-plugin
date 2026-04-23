@@ -131,7 +131,7 @@ class ScanContextStub:
         self.query_calls.append((room_id, event_type, state_key))
         return self.query_result
 
-    async def read_agent_message_snapshot(
+    async def get_latest_agent_message_snapshot(
         self,
         room_id: str,
         sender: str,
@@ -327,7 +327,7 @@ async def test_latest_message_read_failure_fails_closed(tmp_path: Path) -> None:
             "min_idle_before_poke_seconds": 0,
         },
     )
-    ctx.read_agent_message_snapshot = AsyncMock(side_effect=RuntimeError("boom"))
+    ctx.get_latest_agent_message_snapshot = AsyncMock(side_effect=RuntimeError("boom"))
 
     pokes = await module._run_poke_scan(ctx)
 
@@ -371,7 +371,7 @@ async def test_room_scope_reader_uses_real_cache_accessor(tmp_path: Path) -> Non
         runtime_started_at=0.0,
     )
 
-    async def read_agent_message_snapshot(
+    async def get_latest_agent_message_snapshot(
         room_id: str,
         sender: str,
         *,
@@ -385,9 +385,9 @@ async def test_room_scope_reader_uses_real_cache_accessor(tmp_path: Path) -> Non
             runtime_started_at=ctx.runtime_started_at,
         )
 
-    ctx.read_agent_message_snapshot = read_agent_message_snapshot
+    ctx.get_latest_agent_message_snapshot = get_latest_agent_message_snapshot
 
-    snapshot = await ctx.read_agent_message_snapshot(
+    snapshot = await ctx.get_latest_agent_message_snapshot(
         room_id,
         "@worker:test",
         thread_id=None,
@@ -406,7 +406,7 @@ async def test_workloop_treats_cache_unavailable_as_busy(tmp_path: Path) -> None
         settings={},
         runtime_started_at=0.0,
     )
-    ctx.read_agent_message_snapshot = AsyncMock(
+    ctx.get_latest_agent_message_snapshot = AsyncMock(
         side_effect=AgentMessageSnapshotUnavailable("cache unavailable")
     )
 
@@ -468,7 +468,7 @@ async def test_threaded_reader_uses_runtime_started_at_for_busy_gate(
         runtime_started_at=1001.0,
     )
 
-    async def read_agent_message_snapshot(
+    async def get_latest_agent_message_snapshot(
         room_id: str,
         sender: str,
         *,
@@ -482,7 +482,7 @@ async def test_threaded_reader_uses_runtime_started_at_for_busy_gate(
             runtime_started_at=ctx.runtime_started_at,
         )
 
-    ctx.read_agent_message_snapshot = read_agent_message_snapshot
+    ctx.get_latest_agent_message_snapshot = get_latest_agent_message_snapshot
 
     should_poke = await module._should_poke_agent(
         ctx,

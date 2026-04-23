@@ -59,7 +59,7 @@ class LifecycleContextStub:
     logger: Any
     send_message: AsyncMock
     message_sender: AsyncMock | None
-    read_agent_message_snapshot: AsyncMock | None
+    get_latest_agent_message_snapshot: AsyncMock | None
     entity_name: str
     room_state_querier: AsyncMock | None = None
 
@@ -103,7 +103,7 @@ class MessageContextStub:
     suppress: bool = False
     query_room_state: AsyncMock | None = None
     message_sender: Any = None
-    read_agent_message_snapshot: Any = field(
+    get_latest_agent_message_snapshot: Any = field(
         default_factory=lambda: AsyncMock(return_value=None)
     )
     room_state_querier: Any = None
@@ -134,7 +134,7 @@ def _make_lifecycle_context(
         logger=Mock(),
         send_message=AsyncMock(return_value="$event"),
         message_sender=AsyncMock(return_value="$event"),
-        read_agent_message_snapshot=AsyncMock(return_value=None),
+        get_latest_agent_message_snapshot=AsyncMock(return_value=None),
         entity_name=entity_name,
     )
 

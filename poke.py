@@ -76,7 +76,7 @@ async def _should_poke_agent(
     min_idle: int = 0,
 ) -> bool:
     try:
-        last_message = await ctx.read_agent_message_snapshot(
+        last_message = await ctx.get_latest_agent_message_snapshot(
             room_id=room_id,
             sender=_agent_matrix_user_id(ctx, agent_name),
             thread_id=thread_id,
@@ -328,7 +328,7 @@ def _build_auto_poke_runtime(ctx: AgentLifecycleContext) -> AutoPokeRuntime:
         runtime_paths=ctx.runtime_paths,
         logger=ctx.logger,
         _message_sender=ctx.message_sender,
-        _agent_message_snapshot_reader=ctx.read_agent_message_snapshot,
+        _agent_message_snapshot_reader=ctx.get_latest_agent_message_snapshot,
         _room_state_querier=ctx.room_state_querier,
     )
 

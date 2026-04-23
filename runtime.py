@@ -41,7 +41,7 @@ class PokeScanContext(Protocol):
     state_root: Path
     runtime_paths: Any
 
-    async def read_agent_message_snapshot(
+    async def get_latest_agent_message_snapshot(
         self,
         room_id: str,
         sender: str,
@@ -78,7 +78,7 @@ class AutoPokeRuntime:
     _agent_message_snapshot_reader: Any | None
     _room_state_querier: HookRoomStateQuerier | None
 
-    async def read_agent_message_snapshot(
+    async def get_latest_agent_message_snapshot(
         self,
         room_id: str,
         sender: str,
@@ -87,7 +87,7 @@ class AutoPokeRuntime:
     ) -> AgentMessageSnapshotLike | None:
         if self._agent_message_snapshot_reader is None:
             self.logger.warning(
-                "workloop-auto-poke: read_agent_message_snapshot called but no reader registered"
+                "workloop-auto-poke: get_latest_agent_message_snapshot called but no reader registered"
             )
             return None
         return await self._agent_message_snapshot_reader(
