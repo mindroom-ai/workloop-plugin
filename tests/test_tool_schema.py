@@ -33,3 +33,21 @@ def test_add_todo_schema_includes_title_parameter() -> None:
     assert schema["properties"]["title"]["type"] == "string"
     assert "title" in schema["required"]
     assert "agent" not in schema["properties"]
+
+
+def test_apply_template_schema_accepts_scalar_params() -> None:
+    module = _load_tools_module()
+
+    manager = module.WorkloopTodoManager()
+    function = manager.functions["workloop_apply_template"]
+    function.process_entrypoint()
+    schema = function.parameters
+
+    assert "params" in schema["required"]
+    params_schema = schema["properties"]["params"]
+    value_schema = params_schema["additionalProperties"]
+    assert {entry["type"] for entry in value_schema["anyOf"]} == {
+        "boolean",
+        "integer",
+        "string",
+    }

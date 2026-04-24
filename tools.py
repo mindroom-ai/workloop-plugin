@@ -944,7 +944,7 @@ class WorkloopTodoManager(Toolkit):
         self,
         agent: Agent | Team,
         name: str,
-        params: dict[str, Any],
+        params: dict[str, str | int | bool],
         dry_run: bool = False,
     ) -> str:
         """Apply a named todo template to the current thread's work plan.
