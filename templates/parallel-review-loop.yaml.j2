@@ -9,7 +9,7 @@ description: N-reviewer parallel review loop, terminates on unanimous APPROVE on
 todos:
   - title: "Archive or remove stale REVIEW-*.md files before rendering reviewer prompts (gate: no prior-round REVIEW files remain in the worktree root)"
     priority: high
-  - title: "Render canonical reviewer prompts from skills/parallel-review-loop/references/prompt-templates.md via render_review_prompts.py (gate: /tmp/review-{a..h}.md written)"
+  - title: "Render canonical reviewer prompts from skills/parallel-review-loop/references/prompt-templates.md via render_review_prompts.py into a unique private per-round prompt directory (gate: prompt_dir/review-{a..h}.md written)"
     depends_on: [1]
     priority: high
   - title: "Audit generated reviewer prompts with audit_review_prompts.py --letters a,b,c,d,e,f,g,h (gate: clean completeness audit before reviewer spawn)"
@@ -28,5 +28,8 @@ todos:
     priority: high
   - title: "If step 7 forwarded changes: implementer (kept alive) applies fixes, produces new SHA. Else: mark complete immediately as no-op (gate: new commit on branch OR step 7 was unanimous approve)"
     depends_on: [7]
-  - title: "If step 8 produced a new SHA: kill every reviewer tmux session, archive or remove stale REVIEW-*.md files, rerun render plus audit with --letters a,b,c,d,e,f,g,h, and loop back by calling workloop_apply_template('parallel-review-loop', ...) again before any brand-new reviewer starts (gate: new round started OR previous round was unanimous and this todo is no-op)"
+  - title: "If step 8 produced a new SHA: kill every reviewer tmux session, archive or remove stale REVIEW-*.md files, create a new unique private prompt directory, rerun render plus audit with --letters a,b,c,d,e,f,g,h, and loop back by calling workloop_apply_template('parallel-review-loop', ...) again before any brand-new reviewer starts (gate: continuation round spawned OR no-op because step 7 was unanimous; this does NOT complete the review loop)"
     depends_on: [8]
+  - title: "Final unanimous approval gate: complete this todo only after all {{ N_REVIEWERS }} reviewers APPROVE the latest/current SHA in the same round. If a continuation round was spawned, leave this open until that later round reaches unanimous approval (gate: final unanimous approval on current SHA)"
+    depends_on: [9]
+    priority: critical
