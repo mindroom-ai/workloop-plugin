@@ -7,17 +7,23 @@ version: "1.0"
 description: N-reviewer parallel review loop, terminates on unanimous APPROVE on same SHA.
 
 todos:
-  - title: "Spawn N={{ N_REVIEWERS }} reviewers (default 7×codex-xhigh + 1×claude-opus-high) against current implementer SHA (gate: all N spawned)"
+  - title: "Render canonical reviewer prompts from skills/parallel-review-loop/references/prompt-templates.md via render_review_prompts.py (gate: /tmp/review-{a..h}.md written)"
     priority: high
-  - title: "Collect N={{ N_REVIEWERS }} verdicts (APPROVE / REQUEST_CHANGES) (gate: N verdicts received)"
+  - title: "Audit generated reviewer prompts with audit_review_prompts.py (gate: clean audit before reviewer spawn)"
     depends_on: [1]
-  - title: "Triage feedback per SOUL #1b — drop theoretical edges, defensive checks, scope creep, options nobody asked for (gate: triaged set written)"
+    priority: high
+  - title: "Spawn N={{ N_REVIEWERS }} reviewers (default 7×codex-xhigh + 1×claude-opus-high) from audited canonical prompts (gate: all N spawned)"
     depends_on: [2]
     priority: high
-  - title: "If all {{ N_REVIEWERS }} APPROVE on same SHA → mark this todo done to exit loop. Else: forward triaged feedback to existing implementer (gate: branch decision made)"
+  - title: "Collect N={{ N_REVIEWERS }} verdicts (APPROVE / REQUEST_CHANGES) (gate: N verdicts received)"
     depends_on: [3]
-    priority: high
-  - title: "If step 4 forwarded changes: implementer (kept alive) applies fixes, produces new SHA. Else: mark complete immediately as no-op (gate: new commit on branch OR step 4 was unanimous approve)"
+  - title: "Triage feedback per SOUL #1b — drop theoretical edges, defensive checks, scope creep, options nobody asked for (gate: triaged set written)"
     depends_on: [4]
-  - title: "Re-spawn review loop on new SHA: prior approvers get fresh /new context window, change-requesters keep context. Loop back by calling workloop_apply_template('parallel-review-loop', ...) again (gate: new round started OR previous round was unanimous and this todo is no-op)"
+    priority: high
+  - title: "If all {{ N_REVIEWERS }} APPROVE on same SHA → mark this todo done to exit loop. Else: forward triaged feedback to existing implementer (gate: branch decision made)"
     depends_on: [5]
+    priority: high
+  - title: "If step 6 forwarded changes: implementer (kept alive) applies fixes, produces new SHA. Else: mark complete immediately as no-op (gate: new commit on branch OR step 6 was unanimous approve)"
+    depends_on: [6]
+  - title: "If step 7 produced a new SHA: kill every reviewer tmux session, rerun render plus audit, and loop back by calling workloop_apply_template('parallel-review-loop', ...) again before any brand-new reviewer starts (gate: new round started OR previous round was unanimous and this todo is no-op)"
+    depends_on: [7]
