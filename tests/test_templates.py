@@ -709,8 +709,8 @@ def test_apply_writes_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     state = json.loads(_todos_json_path(module, tmp_path).read_text(encoding="utf-8"))
 
-    assert "created 22 todo(s)" in result
-    assert len(state["items"]) == 22
+    assert "created 23 todo(s)" in result
+    assert len(state["items"]) == 23
 
 
 def test_apply_parallel_review_loop_end_to_end(
@@ -730,9 +730,9 @@ def test_apply_parallel_review_loop_end_to_end(
     state = json.loads(_todos_json_path(module, tmp_path).read_text(encoding="utf-8"))
     items = state["items"]
 
-    assert "created 8 todo(s)" in result
-    assert len(items) == 8
-    assert items[0]["title"].startswith("Render canonical reviewer prompts")
+    assert "created 9 todo(s)" in result
+    assert len(items) == 9
+    assert items[0]["title"].startswith("Archive or remove stale REVIEW-*.md")
     assert items[0]["depends_on"] == []
     assert items[1]["depends_on"] == [items[0]["id"]]
     assert items[2]["depends_on"] == [items[1]["id"]]
@@ -741,9 +741,12 @@ def test_apply_parallel_review_loop_end_to_end(
     assert items[5]["depends_on"] == [items[4]["id"]]
     assert items[6]["depends_on"] == [items[5]["id"]]
     assert items[7]["depends_on"] == [items[6]["id"]]
-    assert "Audit generated reviewer prompts" in items[1]["title"]
-    assert "N=8 reviewers" in items[2]["title"]
-    assert "audited canonical prompts" in items[2]["title"]
+    assert items[8]["depends_on"] == [items[7]["id"]]
+    assert "Render canonical reviewer prompts" in items[1]["title"]
+    assert "Audit generated reviewer prompts" in items[2]["title"]
+    assert "--letters a,b,c,d,e,f,g,h" in items[2]["title"]
+    assert "N=8 reviewers" in items[3]["title"]
+    assert "audited canonical prompts" in items[3]["title"]
 
     with pytest.raises(
         ValueError, match=r"N_REVIEWERS: Input should be greater than or equal to 1"
@@ -856,7 +859,7 @@ def test_parallel_review_loop_unanimous_approve_path_completes() -> None:
 
     rendered = module._render_template_definition("parallel-review-loop", {})
 
-    assert "mark complete immediately as no-op" in rendered["todos"][6]["title"]
+    assert "mark complete immediately as no-op" in rendered["todos"][7]["title"]
 
 
 def test_parallel_review_loop_has_render_audit_gate_before_spawn() -> None:
@@ -867,22 +870,27 @@ def test_parallel_review_loop_has_render_audit_gate_before_spawn() -> None:
     )
     todos = rendered["todos"]
 
-    assert todos[0]["title"].startswith("Render canonical reviewer prompts")
-    assert "prompt-templates.md" in todos[0]["title"]
-    assert todos[1]["title"].startswith("Audit generated reviewer prompts")
-    assert "clean audit before reviewer spawn" in todos[1]["title"]
-    assert todos[2]["title"].startswith("Spawn N=8 reviewers")
-    assert todos[2]["depends_on"] == [2]
+    assert todos[0]["title"].startswith("Archive or remove stale REVIEW-*.md")
+    assert "prior-round REVIEW files" in todos[0]["title"]
+    assert todos[1]["title"].startswith("Render canonical reviewer prompts")
+    assert "prompt-templates.md" in todos[1]["title"]
+    assert todos[2]["title"].startswith("Audit generated reviewer prompts")
+    assert "--letters a,b,c,d,e,f,g,h" in todos[2]["title"]
+    assert "clean completeness audit before reviewer spawn" in todos[2]["title"]
+    assert todos[3]["title"].startswith("Spawn N=8 reviewers")
+    assert todos[3]["depends_on"] == [3]
 
 
 def test_parallel_review_loop_respawn_kills_all_and_reruns_gate() -> None:
     module = _load_tools_module()
 
     rendered = module._render_template_definition("parallel-review-loop", {})
-    respawn_title = rendered["todos"][7]["title"]
+    respawn_title = rendered["todos"][8]["title"]
 
     assert "kill every reviewer tmux session" in respawn_title
+    assert "archive or remove stale REVIEW-*.md files" in respawn_title
     assert "rerun render plus audit" in respawn_title
+    assert "--letters a,b,c,d,e,f,g,h" in respawn_title
     assert "before any brand-new reviewer starts" in respawn_title
 
 
