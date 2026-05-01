@@ -22,6 +22,11 @@ def test_plugin_declares_workloop_template_skill() -> None:
 
     assert frontmatter["name"] == "workloop-templates"
     assert "<agent-workspace>/workloop/templates/" in content
+    assert "Extra fields are rejected" in content
+    assert "Normal todos must not include `sub_template` or `params`" in content
+    assert "Sub-template todos must not include `title`, `priority`, or `assigned_agent`" in content
+    assert "1-based indexes into the current rendered template's own `todos` list" in content
+    assert "`mindroom-dev`: requires `ISSUE_REF: str`" in content
     assert "include_builtin_templates: false" in content
 
     listings = list_skill_listings([plugin_root / "skills"])
