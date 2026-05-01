@@ -49,6 +49,8 @@ Toolkit name: `workloop_todo_manager`
 
 Templates live in `templates/<name>.yaml.j2` and are rendered with Jinja over YAML. They are hot-editable, so adding or revising a template does not require a plugin restart.
 
+Agents can also define templates in `<agent-workspace>/workloop/templates/*.yaml.j2`. Workspace templates are discovered before bundled templates and override bundled templates by name. Set `include_builtin_templates: false` in plugin settings to disable bundled fallback.
+
 Built-in templates:
 
 - `mindroom-dev`: single-issue development protocol with planning, implementation, review loop, live-test gate, and squash-merge steps
@@ -110,6 +112,7 @@ Plugin settings in `config.yaml`:
 | `max_pokes_per_tick` | `3` | Maximum number of poke messages sent in one scan cycle |
 | `min_idle_before_poke_seconds` | `600` | Minimum idle time before a thread becomes eligible for a poke |
 | `max_items_in_enrichment` | `10` | Maximum number of actionable or blocked items shown in prompt enrichment |
+| `include_builtin_templates` | `true` | Whether bundled plugin templates are listed and available as fallback after workspace templates |
 
 Example:
 
@@ -124,6 +127,7 @@ plugins:
       max_pokes_per_tick: 3
       min_idle_before_poke_seconds: 600
       max_items_in_enrichment: 10
+      include_builtin_templates: true
 ```
 
 ## Setup

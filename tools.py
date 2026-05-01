@@ -16,7 +16,8 @@ import logging
 import re
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import util as importlib_util
 from pathlib import Path
@@ -37,9 +38,12 @@ from mindroom.tool_system.metadata import (
     register_tool_with_metadata,
 )
 from mindroom.tool_system.runtime_context import (
+    build_execution_identity_from_runtime_context,
     get_plugin_state_root,
     get_tool_runtime_context,
 )
+from mindroom.runtime_resolution import resolve_agent_runtime
+from mindroom.tool_system.worker_routing import agent_workspace_root_path
 
 # Runtime imports needed for Agno toolkit introspection.
 if TYPE_CHECKING:
@@ -63,7 +67,14 @@ PRIORITY_EMOJI: dict[str, str] = {
 }
 PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 TEMPLATE_RECURSION_LIMIT = 3
+WORKSPACE_TEMPLATE_RELATIVE_DIR = Path("workloop/templates")
 _JINJA_ENV = Environment(autoescape=False, undefined=StrictUndefined)
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateRoot:
+    path: Path
+    source: str
 
 
 def _load_template_schemas_module() -> Any:
@@ -204,7 +215,7 @@ def _templates_dir() -> Path:
     return Path(__file__).parent / "templates"
 
 
-def _template_path(name: str, template_dir: Path | None = None) -> Path:
+def _validate_template_name(name: str) -> None:
     if (
         not name
         or "/" in name
@@ -214,11 +225,105 @@ def _template_path(name: str, template_dir: Path | None = None) -> Path:
     ):
         raise ValueError(f"invalid template name: '{name}'")
 
+
+def _template_path(name: str, template_dir: Path | None = None) -> Path:
+    _validate_template_name(name)
     root = (template_dir or _templates_dir()).resolve()
     path = (root / f"{name}.yaml.j2").resolve()
     if not path.is_relative_to(root):
         raise ValueError(f"invalid template name: '{name}'")
     return path
+
+
+def _configured_plugin_settings() -> dict[str, Any]:
+    """Return this plugin's config settings from the active tool context."""
+    ctx = get_tool_runtime_context()
+    if ctx is None or getattr(ctx, "config", None) is None:
+        return {}
+
+    plugin_root = Path(__file__).resolve().parent
+    runtime_paths = ctx.runtime_paths
+    for plugin_entry in getattr(ctx.config, "plugins", ()) or ():
+        if not getattr(plugin_entry, "enabled", True):
+            continue
+        plugin_path = getattr(plugin_entry, "path", "")
+        try:
+            configured_root = Path(plugin_path).expanduser()
+            if not configured_root.is_absolute():
+                config_dir = getattr(runtime_paths, "config_dir", None)
+                if config_dir is None:
+                    continue
+                configured_root = Path(config_dir) / configured_root
+            if configured_root.resolve() != plugin_root:
+                continue
+        except OSError:
+            continue
+        return dict(getattr(plugin_entry, "settings", {}) or {})
+    return {}
+
+
+def _include_builtin_templates(settings: Mapping[str, Any] | None = None) -> bool:
+    """Return whether bundled plugin templates should be visible."""
+    resolved_settings = _configured_plugin_settings() if settings is None else settings
+    return resolved_settings.get("include_builtin_templates") is not False
+
+
+def _current_agent_workspace_root() -> Path | None:
+    """Return the current agent workspace root for shared and private agents."""
+    ctx = get_tool_runtime_context()
+    if ctx is None or getattr(ctx, "config", None) is None:
+        return None
+
+    agent_config = (getattr(ctx.config, "agents", {}) or {}).get(ctx.agent_name)
+    if agent_config is None:
+        return None
+
+    if getattr(agent_config, "private", None) is not None:
+        execution_identity = build_execution_identity_from_runtime_context(ctx)
+        agent_runtime = resolve_agent_runtime(
+            ctx.agent_name,
+            ctx.config,
+            ctx.runtime_paths,
+            execution_identity=execution_identity,
+            create=True,
+        )
+        workspace = getattr(agent_runtime, "workspace", None)
+        return workspace.root if workspace is not None else None
+
+    return agent_workspace_root_path(ctx.runtime_paths.storage_root, ctx.agent_name)
+
+
+def _visible_template_roots(
+    settings: Mapping[str, Any] | None = None,
+) -> tuple[TemplateRoot, ...]:
+    roots: list[TemplateRoot] = []
+    workspace_root = _current_agent_workspace_root()
+    if workspace_root is not None:
+        roots.append(
+            TemplateRoot(
+                path=workspace_root / WORKSPACE_TEMPLATE_RELATIVE_DIR,
+                source="workspace",
+            )
+        )
+    if _include_builtin_templates(settings):
+        roots.append(TemplateRoot(path=_templates_dir(), source="builtin"))
+    return tuple(roots)
+
+
+def _template_roots_from_dir(template_dir: Path | None) -> tuple[TemplateRoot, ...]:
+    return (TemplateRoot(path=template_dir or _templates_dir(), source="builtin"),)
+
+
+def _resolve_template_path(
+    name: str,
+    template_roots: Sequence[TemplateRoot],
+) -> tuple[Path, TemplateRoot]:
+    _validate_template_name(name)
+    for template_root in template_roots:
+        path = _template_path(name, template_root.path)
+        if path.is_file():
+            return path, template_root
+    raise ValueError(f"Unknown template: '{name}'")
 
 
 def _render_jinja_template(
@@ -341,6 +446,7 @@ def _render_template_definition(
     params: dict[str, Any],
     *,
     template_dir: Path | None = None,
+    template_roots: Sequence[TemplateRoot] | None = None,
     depth: int = 1,
 ) -> dict[str, Any]:
     if depth > TEMPLATE_RECURSION_LIMIT:
@@ -348,9 +454,12 @@ def _render_template_definition(
             f"Template recursion depth exceeded while expanding '{name}'"
         )
 
-    path = _template_path(name, template_dir)
-    if not path.is_file():
-        raise ValueError(f"Unknown template: '{name}'")
+    resolved_template_roots = (
+        tuple(template_roots)
+        if template_roots is not None
+        else _template_roots_from_dir(template_dir)
+    )
+    path, _template_root = _resolve_template_path(name, resolved_template_roots)
 
     raw_text = path.read_text(encoding="utf-8")
     raw_template = _load_template_document(path, raw_text)
@@ -375,6 +484,7 @@ def _render_template_definition(
     expanded_todos = _expand_template_todos(
         rendered_todos,
         template_dir=template_dir,
+        template_roots=resolved_template_roots,
         depth=depth,
     )
     _validate_dependency_cycle(rendered_document.name, expanded_todos)
@@ -392,6 +502,7 @@ def _expand_template_todos(
     todos: list[dict[str, Any]],
     *,
     template_dir: Path | None = None,
+    template_roots: Sequence[TemplateRoot] | None = None,
     depth: int,
 ) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
@@ -416,6 +527,7 @@ def _expand_template_todos(
             entry["sub_template"],
             entry.get("params", {}),
             template_dir=template_dir,
+            template_roots=template_roots,
             depth=depth + 1,
         )
         offset = len(expanded)
@@ -494,13 +606,13 @@ def _format_template_apply_result(
 
 def _format_templates_table(templates: list[dict[str, Any]]) -> str:
     lines = [
-        "| name | version | description | json schema |",
-        "| --- | --- | --- | --- |",
+        "| source | name | version | description | json schema |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for template in templates:
         json_schema = template["json_schema"] or "-"
         lines.append(
-            f"| `{template['name']}` | `{template['version']}` | {template['description']} | {json_schema} |"
+            f"| `{template['source']}` | `{template['name']}` | `{template['version']}` | {template['description']} | {json_schema} |"
         )
     return "\n".join(lines)
 
@@ -964,7 +1076,12 @@ class WorkloopTodoManager(Toolkit):
             )
 
         """
-        rendered_template = _render_template_definition(name, params)
+        template_roots = _visible_template_roots()
+        rendered_template = _render_template_definition(
+            name,
+            params,
+            template_roots=template_roots,
+        )
         if dry_run:
             return _format_template_preview(
                 rendered_template["name"],
@@ -1024,27 +1141,35 @@ class WorkloopTodoManager(Toolkit):
     ) -> str:
         """List available workloop templates."""
         templates: list[dict[str, Any]] = []
-        templates_root = _templates_dir().resolve()
-        for path in sorted(templates_root.glob("*.yaml.j2")):
-            resolved_path = path.resolve()
-            if not resolved_path.is_relative_to(templates_root):
-                raise ValueError(
-                    f"Template '{path.name}' escapes templates dir via symlink"
+        seen_names: set[str] = set()
+        for template_root in _visible_template_roots():
+            templates_root = template_root.path.resolve()
+            if not templates_root.is_dir():
+                continue
+            for path in sorted(templates_root.glob("*.yaml.j2")):
+                resolved_path = path.resolve()
+                if not resolved_path.is_relative_to(templates_root):
+                    raise ValueError(
+                        f"Template '{path.name}' escapes templates dir via symlink"
+                    )
+                metadata = _load_template_metadata(path)
+                if metadata["name"] in seen_names:
+                    continue
+                seen_names.add(metadata["name"])
+                schema = PARAMS_SCHEMAS.get(metadata["name"])
+                templates.append(
+                    {
+                        "source": template_root.source,
+                        "name": metadata["name"],
+                        "version": metadata["version"],
+                        "description": metadata["description"],
+                        "json_schema": (
+                            json.dumps(schema.model_json_schema(), sort_keys=True)
+                            if schema is not None
+                            else None
+                        ),
+                    }
                 )
-            metadata = _load_template_metadata(path)
-            schema = PARAMS_SCHEMAS.get(metadata["name"])
-            templates.append(
-                {
-                    "name": metadata["name"],
-                    "version": metadata["version"],
-                    "description": metadata["description"],
-                    "json_schema": (
-                        json.dumps(schema.model_json_schema(), sort_keys=True)
-                        if schema is not None
-                        else None
-                    ),
-                }
-            )
         return _format_templates_table(templates)
 
 
