@@ -8,9 +8,19 @@ import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 _T = Any  # generic return from mutate callback
+
+
+class MessageTargetLike(Protocol):
+    source_thread_id: str | None
+    resolved_thread_id: str | None
+
+
+class MessageEnvelopeLike(Protocol):
+    room_id: str
+    target: MessageTargetLike
 
 
 def _sanitize(value: str) -> str:
@@ -22,7 +32,7 @@ def _thread_key(room_id: str, thread_id: str | None) -> str:
     return f"{_sanitize(room_id)}_{_sanitize(resolved)}"
 
 
-def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
+def resolve_scope(envelope: MessageEnvelopeLike) -> tuple[str, str | None, str | None]:
     """Return (room_id, storage_thread_id, reply_thread_id).
 
     storage_thread_id: None for room-level → becomes "main" in _thread_key.
@@ -34,20 +44,15 @@ def resolve_scope(envelope: Any) -> tuple[str, str | None, str | None]:
     """
     room_id = envelope.room_id
     target = envelope.target
-    storage_tid = getattr(target, "source_thread_id", getattr(target, "thread_id", None))
+    storage_tid = target.source_thread_id
     reply_tid = target.resolved_thread_id if storage_tid else None
     return room_id, storage_tid, reply_tid
 
 
-def response_scope_thread_id(envelope: Any) -> str:
+def response_scope_thread_id(envelope: MessageEnvelopeLike) -> str:
     """Return the actual response-scope thread key for agent-generated work state."""
     target = envelope.target
-    return (
-        target.resolved_thread_id
-        or getattr(target, "source_thread_id", None)
-        or getattr(target, "thread_id", None)
-        or "main"
-    )
+    return target.resolved_thread_id or target.source_thread_id or "main"
 
 
 def now_iso() -> str:

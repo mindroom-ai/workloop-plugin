@@ -2,16 +2,71 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass, field
 from importlib import util
 from pathlib import Path
 from textwrap import dedent
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 PACKAGE_NAME = f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeRuntimePaths:
+    storage_root: Path
+    config_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FakePrivateConfig:
+    per: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeAgentConfig:
+    private: _FakePrivateConfig | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FakePluginEntry:
+    path: str
+    enabled: bool = True
+    settings: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeConfig:
+    agents: dict[str, _FakeAgentConfig]
+    plugins: list[_FakePluginEntry]
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeRuntimeContext:
+    agent_name: str
+    room_id: str
+    thread_id: str | None
+    resolved_thread_id: str | None
+    requester_id: str
+    runtime_paths: _FakeRuntimePaths
+    config: _FakeConfig
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeExecutionIdentity:
+    agent_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeWorkspace:
+    root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeAgentRuntime:
+    workspace: _FakeWorkspace | None
 
 
 def _load_tools_module():
@@ -58,22 +113,25 @@ def _bind_runtime_context(
     settings: dict[str, object] | None = None,
 ):
     plugin_root = Path(module.__file__).resolve().parent
-    runtime_paths = SimpleNamespace(storage_root=storage_root)
-    config = SimpleNamespace(
+    runtime_paths = _FakeRuntimePaths(
+        storage_root=storage_root,
+        config_dir=plugin_root.parent,
+    )
+    config = _FakeConfig(
         agents={
-            agent_name: SimpleNamespace(
-                private=SimpleNamespace(per="user") if private else None,
+            agent_name: _FakeAgentConfig(
+                private=_FakePrivateConfig(per="user") if private else None,
             ),
         },
         plugins=[
-            SimpleNamespace(
+            _FakePluginEntry(
                 path=str(plugin_root),
                 enabled=True,
                 settings=settings or {},
             ),
         ],
     )
-    ctx = SimpleNamespace(
+    ctx = _FakeRuntimeContext(
         agent_name=agent_name,
         room_id="!room:test",
         thread_id="$thread:test",
@@ -270,6 +328,28 @@ def test_malformed_jinja_syntax_fails_loud_on_apply(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"broken-jinja\.yaml\.j2"):
         module._render_template_definition("broken-jinja", {}, template_dir=template_dir)
+
+
+def test_unsafe_jinja_expression_fails_loud(tmp_path: Path) -> None:
+    module = _load_tools_module()
+    template_dir = tmp_path / "templates"
+    _write_template(
+        template_dir,
+        "unsafe-jinja",
+        """
+        name: unsafe-jinja
+        version: "1.0"
+        description: Unsafe Jinja test.
+        todos:
+          - title: "{{ cycler.__init__.__globals__.os.popen('id').read() }}"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"unsafe-jinja\.yaml\.j2.*unsafe template expression",
+    ):
+        module._render_template_definition("unsafe-jinja", {}, template_dir=template_dir)
 
 
 def test_sub_template_inlining(tmp_path: Path) -> None:
@@ -1157,14 +1237,16 @@ def test_workspace_templates_use_private_resolved_workspace(
     monkeypatch.setattr(
         module,
         "build_execution_identity_from_runtime_context",
-        lambda runtime_context: SimpleNamespace(agent_name=runtime_context.agent_name),
+        lambda runtime_context: _FakeExecutionIdentity(
+            agent_name=runtime_context.agent_name,
+        ),
         raising=False,
     )
     monkeypatch.setattr(
         module,
         "resolve_agent_runtime",
-        lambda agent_name, config, runtime_paths, execution_identity, create=False: SimpleNamespace(
-            workspace=SimpleNamespace(root=private_workspace),
+        lambda agent_name, config, runtime_paths, execution_identity, create=False: _FakeAgentRuntime(
+            workspace=_FakeWorkspace(root=private_workspace),
         ),
         raising=False,
     )

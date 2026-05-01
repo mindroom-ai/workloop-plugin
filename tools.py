@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Any
 from agno.tools import Toolkit
 from agno.agent import Agent
 from agno.team.team import Team
-from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, UndefinedError
+from jinja2 import StrictUndefined, TemplateSyntaxError, UndefinedError
+from jinja2.sandbox import SandboxedEnvironment, SecurityError
 from pydantic import ValidationError
 import yaml
 
@@ -47,6 +48,7 @@ from mindroom.tool_system.worker_routing import agent_workspace_root_path
 
 # Runtime imports needed for Agno toolkit introspection.
 if TYPE_CHECKING:
+    from mindroom.config.plugin import PluginEntryConfig
     from mindroom.constants import RuntimePaths
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,7 @@ PRIORITY_EMOJI: dict[str, str] = {
 PRIORITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 TEMPLATE_RECURSION_LIMIT = 3
 WORKSPACE_TEMPLATE_RELATIVE_DIR = Path("workloop/templates")
-_JINJA_ENV = Environment(autoescape=False, undefined=StrictUndefined)
+_JINJA_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,30 +237,33 @@ def _template_path(name: str, template_dir: Path | None = None) -> Path:
     return path
 
 
+def _configured_plugin_root(
+    plugin_entry: PluginEntryConfig,
+    runtime_paths: RuntimePaths,
+) -> Path | None:
+    configured_root = Path(plugin_entry.path).expanduser()
+    if not configured_root.is_absolute():
+        configured_root = runtime_paths.config_dir / configured_root
+    try:
+        return configured_root.resolve()
+    except OSError:
+        return None
+
+
 def _configured_plugin_settings() -> dict[str, Any]:
     """Return this plugin's config settings from the active tool context."""
     ctx = get_tool_runtime_context()
-    if ctx is None or getattr(ctx, "config", None) is None:
+    if ctx is None:
         return {}
 
     plugin_root = Path(__file__).resolve().parent
-    runtime_paths = ctx.runtime_paths
-    for plugin_entry in getattr(ctx.config, "plugins", ()) or ():
-        if not getattr(plugin_entry, "enabled", True):
+    for plugin_entry in ctx.config.plugins:
+        if not plugin_entry.enabled:
             continue
-        plugin_path = getattr(plugin_entry, "path", "")
-        try:
-            configured_root = Path(plugin_path).expanduser()
-            if not configured_root.is_absolute():
-                config_dir = getattr(runtime_paths, "config_dir", None)
-                if config_dir is None:
-                    continue
-                configured_root = Path(config_dir) / configured_root
-            if configured_root.resolve() != plugin_root:
-                continue
-        except OSError:
+        configured_root = _configured_plugin_root(plugin_entry, ctx.runtime_paths)
+        if configured_root != plugin_root:
             continue
-        return dict(getattr(plugin_entry, "settings", {}) or {})
+        return dict(plugin_entry.settings)
     return {}
 
 
@@ -271,14 +276,14 @@ def _include_builtin_templates(settings: Mapping[str, Any] | None = None) -> boo
 def _current_agent_workspace_root() -> Path | None:
     """Return the current agent workspace root for shared and private agents."""
     ctx = get_tool_runtime_context()
-    if ctx is None or getattr(ctx, "config", None) is None:
+    if ctx is None:
         return None
 
-    agent_config = (getattr(ctx.config, "agents", {}) or {}).get(ctx.agent_name)
+    agent_config = ctx.config.agents.get(ctx.agent_name)
     if agent_config is None:
         return None
 
-    if getattr(agent_config, "private", None) is not None:
+    if agent_config.private is not None:
         execution_identity = build_execution_identity_from_runtime_context(ctx)
         agent_runtime = resolve_agent_runtime(
             ctx.agent_name,
@@ -287,8 +292,9 @@ def _current_agent_workspace_root() -> Path | None:
             execution_identity=execution_identity,
             create=True,
         )
-        workspace = getattr(agent_runtime, "workspace", None)
-        return workspace.root if workspace is not None else None
+        if agent_runtime.workspace is None:
+            return None
+        return agent_runtime.workspace.root
 
     return agent_workspace_root_path(ctx.runtime_paths.storage_root, ctx.agent_name)
 
@@ -334,6 +340,8 @@ def _render_jinja_template(
 ) -> str:
     try:
         return _JINJA_ENV.from_string(template_text).render(**params)
+    except SecurityError as exc:
+        raise _template_value_error(path, f"unsafe template expression: {exc}") from exc
     except UndefinedError as exc:
         raise _template_value_error(path, f"undefined variable: {exc}") from exc
     except TemplateSyntaxError as exc:
