@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass, field
 from importlib import util
 from pathlib import Path
 from textwrap import dedent
@@ -11,6 +12,61 @@ import pytest
 from pydantic import ValidationError
 
 PACKAGE_NAME = f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeRuntimePaths:
+    storage_root: Path
+    config_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FakePrivateConfig:
+    per: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeAgentConfig:
+    private: _FakePrivateConfig | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FakePluginEntry:
+    path: str
+    enabled: bool = True
+    settings: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeConfig:
+    agents: dict[str, _FakeAgentConfig]
+    plugins: list[_FakePluginEntry]
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeRuntimeContext:
+    agent_name: str
+    room_id: str
+    thread_id: str | None
+    resolved_thread_id: str | None
+    requester_id: str
+    runtime_paths: _FakeRuntimePaths
+    config: _FakeConfig
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeExecutionIdentity:
+    agent_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeWorkspace:
+    root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeAgentRuntime:
+    workspace: _FakeWorkspace | None
 
 
 def _load_tools_module():
@@ -45,6 +101,47 @@ def _bind_templates_dir(
     template_dir: Path,
 ) -> None:
     monkeypatch.setattr(module, "_templates_dir", lambda: template_dir)
+
+
+def _bind_runtime_context(
+    monkeypatch: pytest.MonkeyPatch,
+    module,
+    *,
+    storage_root: Path,
+    agent_name: str = "codex",
+    private: bool = False,
+    settings: dict[str, object] | None = None,
+):
+    plugin_root = Path(module.__file__).resolve().parent
+    runtime_paths = _FakeRuntimePaths(
+        storage_root=storage_root,
+        config_dir=plugin_root.parent,
+    )
+    config = _FakeConfig(
+        agents={
+            agent_name: _FakeAgentConfig(
+                private=_FakePrivateConfig(per="user") if private else None,
+            ),
+        },
+        plugins=[
+            _FakePluginEntry(
+                path=str(plugin_root),
+                enabled=True,
+                settings=settings or {},
+            ),
+        ],
+    )
+    ctx = _FakeRuntimeContext(
+        agent_name=agent_name,
+        room_id="!room:test",
+        thread_id="$thread:test",
+        resolved_thread_id="$thread:test",
+        requester_id="@user:test",
+        runtime_paths=runtime_paths,
+        config=config,
+    )
+    monkeypatch.setattr(module, "get_tool_runtime_context", lambda: ctx)
+    return ctx
 
 
 def _todos_json_path(module, state_root: Path) -> Path:
@@ -231,6 +328,28 @@ def test_malformed_jinja_syntax_fails_loud_on_apply(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"broken-jinja\.yaml\.j2"):
         module._render_template_definition("broken-jinja", {}, template_dir=template_dir)
+
+
+def test_unsafe_jinja_expression_fails_loud(tmp_path: Path) -> None:
+    module = _load_tools_module()
+    template_dir = tmp_path / "templates"
+    _write_template(
+        template_dir,
+        "unsafe-jinja",
+        """
+        name: unsafe-jinja
+        version: "1.0"
+        description: Unsafe Jinja test.
+        todos:
+          - title: "{{ cycler.__init__.__globals__.os.popen('id').read() }}"
+        """,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"unsafe-jinja\.yaml\.j2.*unsafe template expression",
+    ):
+        module._render_template_definition("unsafe-jinja", {}, template_dir=template_dir)
 
 
 def test_sub_template_inlining(tmp_path: Path) -> None:
@@ -796,7 +915,7 @@ def test_list_templates_includes_json_schema_when_registered() -> None:
     module = _load_tools_module()
     listed = module.WorkloopTodoManager().workloop_list_templates(None)
 
-    assert "| name | version | description | json schema |" in listed
+    assert "| source | name | version | description | json schema |" in listed
     assert '"REPO"' in listed
     assert '"enum": ["mindroom", "cinny", "nixos", "tuwunel"]' in listed
     assert '"default": 8' in listed
@@ -840,3 +959,334 @@ def test_malformed_template_fails_loud(
 
     with pytest.raises(ValueError, match=r"broken\.yaml\.j2"):
         manager.workloop_list_templates(None)
+
+
+def test_workspace_template_overrides_builtin_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    builtin_dir = tmp_path / "builtin-templates"
+    workspace_template_dir = (
+        tmp_path
+        / "storage"
+        / "agents"
+        / "codex"
+        / "workspace"
+        / "workloop"
+        / "templates"
+    )
+    _write_template(
+        builtin_dir,
+        "override",
+        """
+        name: override
+        version: "1.0"
+        description: Builtin version.
+        todos:
+          - title: "builtin task"
+        """,
+    )
+    _write_template(
+        workspace_template_dir,
+        "override",
+        """
+        name: override
+        version: "1.0"
+        description: Workspace version.
+        todos:
+          - title: "workspace task"
+        """,
+    )
+    _bind_templates_dir(monkeypatch, module, builtin_dir)
+    _bind_runtime_context(monkeypatch, module, storage_root=tmp_path / "storage")
+
+    preview = module.WorkloopTodoManager().workloop_apply_template(
+        None,
+        "override",
+        {},
+        dry_run=True,
+    )
+
+    assert "workspace task" in preview
+    assert "builtin task" not in preview
+
+
+def test_list_templates_prefers_workspace_template_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    builtin_dir = tmp_path / "builtin-templates"
+    workspace_template_dir = (
+        tmp_path
+        / "storage"
+        / "agents"
+        / "codex"
+        / "workspace"
+        / "workloop"
+        / "templates"
+    )
+    _write_template(
+        builtin_dir,
+        "shared-name",
+        """
+        name: shared-name
+        version: "1.0"
+        description: Builtin version.
+        todos:
+          - title: "builtin task"
+        """,
+    )
+    _write_template(
+        workspace_template_dir,
+        "shared-name",
+        """
+        name: shared-name
+        version: "2.0"
+        description: Workspace version.
+        todos:
+          - title: "workspace task"
+        """,
+    )
+    _write_template(
+        workspace_template_dir,
+        "workspace-only",
+        """
+        name: workspace-only
+        version: "1.0"
+        description: Workspace only.
+        todos:
+          - title: "workspace-only task"
+        """,
+    )
+    _bind_templates_dir(monkeypatch, module, builtin_dir)
+    _bind_runtime_context(monkeypatch, module, storage_root=tmp_path / "storage")
+
+    listed = module.WorkloopTodoManager().workloop_list_templates(None)
+
+    assert "| source | name | version | description | json schema |" in listed
+    assert listed.count("`shared-name`") == 1
+    assert "| `workspace` | `shared-name` | `2.0` | Workspace version." in listed
+    assert "`workspace-only`" in listed
+
+
+def test_apply_workspace_template_writes_todos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    workspace_template_dir = (
+        tmp_path
+        / "storage"
+        / "agents"
+        / "codex"
+        / "workspace"
+        / "workloop"
+        / "templates"
+    )
+    _write_template(
+        workspace_template_dir,
+        "workspace-plan",
+        """
+        name: workspace-plan
+        version: "1.0"
+        description: Workspace plan.
+        todos:
+          - title: "first workspace task"
+          - title: "second workspace task"
+            depends_on: [1]
+        """,
+    )
+    _bind_templates_dir(monkeypatch, module, tmp_path / "empty-builtins")
+    _bind_runtime_context(monkeypatch, module, storage_root=tmp_path / "storage")
+
+    result = module.WorkloopTodoManager().workloop_apply_template(
+        None,
+        "workspace-plan",
+        {},
+    )
+    state_path = _todos_json_path(module, tmp_path / "storage" / "plugins" / "workloop")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert "created 2 todo(s)" in result
+    assert [item["title"] for item in state["items"]] == [
+        "first workspace task",
+        "second workspace task",
+    ]
+    assert state["items"][1]["depends_on"] == [state["items"][0]["id"]]
+
+
+def test_workspace_template_can_expand_builtin_sub_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    builtin_dir = tmp_path / "builtin-templates"
+    workspace_template_dir = (
+        tmp_path
+        / "storage"
+        / "agents"
+        / "codex"
+        / "workspace"
+        / "workloop"
+        / "templates"
+    )
+    _write_template(
+        builtin_dir,
+        "builtin-child",
+        """
+        name: builtin-child
+        version: "1.0"
+        description: Builtin child.
+        todos:
+          - title: "child one"
+          - title: "child two"
+            depends_on: [1]
+        """,
+    )
+    _write_template(
+        workspace_template_dir,
+        "workspace-parent",
+        """
+        name: workspace-parent
+        version: "1.0"
+        description: Workspace parent.
+        todos:
+          - title: "parent start"
+          - sub_template: builtin-child
+            depends_on: [1]
+        """,
+    )
+    _bind_templates_dir(monkeypatch, module, builtin_dir)
+    _bind_runtime_context(monkeypatch, module, storage_root=tmp_path / "storage")
+
+    preview = module.WorkloopTodoManager().workloop_apply_template(
+        None,
+        "workspace-parent",
+        {},
+        dry_run=True,
+    )
+
+    assert "parent start" in preview
+    assert "child one" in preview
+    assert "child two" in preview
+
+
+def test_include_builtin_templates_false_hides_builtin_templates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    builtin_dir = tmp_path / "builtin-templates"
+    _write_template(
+        builtin_dir,
+        "builtin-only",
+        """
+        name: builtin-only
+        version: "1.0"
+        description: Builtin only.
+        todos:
+          - title: "builtin task"
+        """,
+    )
+    _bind_templates_dir(monkeypatch, module, builtin_dir)
+    _bind_runtime_context(
+        monkeypatch,
+        module,
+        storage_root=tmp_path / "storage",
+        settings={"include_builtin_templates": False},
+    )
+
+    listed = module.WorkloopTodoManager().workloop_list_templates(None)
+
+    assert "`builtin-only`" not in listed
+    with pytest.raises(ValueError, match="Unknown template: 'builtin-only'"):
+        module.WorkloopTodoManager().workloop_apply_template(
+            None,
+            "builtin-only",
+            {},
+            dry_run=True,
+        )
+
+
+def test_workspace_templates_use_private_resolved_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    private_workspace = tmp_path / "private-state" / "codex_data"
+    workspace_template_dir = private_workspace / "workloop" / "templates"
+    _write_template(
+        workspace_template_dir,
+        "private-template",
+        """
+        name: private-template
+        version: "1.0"
+        description: Private template.
+        todos:
+          - title: "private workspace task"
+        """,
+    )
+    ctx = _bind_runtime_context(
+        monkeypatch,
+        module,
+        storage_root=tmp_path / "storage",
+        private=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "build_execution_identity_from_runtime_context",
+        lambda runtime_context: _FakeExecutionIdentity(
+            agent_name=runtime_context.agent_name,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_agent_runtime",
+        lambda agent_name, config, runtime_paths, execution_identity, create=False: _FakeAgentRuntime(
+            workspace=_FakeWorkspace(root=private_workspace),
+        ),
+        raising=False,
+    )
+
+    preview = module.WorkloopTodoManager().workloop_apply_template(
+        None,
+        "private-template",
+        {},
+        dry_run=True,
+    )
+
+    assert ctx.agent_name == "codex"
+    assert "private workspace task" in preview
+
+
+def test_list_templates_rejects_workspace_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tools_module()
+    workspace_template_dir = (
+        tmp_path
+        / "storage"
+        / "agents"
+        / "codex"
+        / "workspace"
+        / "workloop"
+        / "templates"
+    )
+    external_dir = tmp_path / "external"
+    workspace_template_dir.mkdir(parents=True, exist_ok=True)
+    external_dir.mkdir(parents=True, exist_ok=True)
+    external_template = external_dir / "escape.yaml.j2"
+    external_template.write_text(
+        'name: escape\nversion: "1.0"\ndescription: escaped\ntodos:\n  - title: "escaped"\n',
+        encoding="utf-8",
+    )
+    (workspace_template_dir / "escape.yaml.j2").symlink_to(external_template)
+    _bind_templates_dir(monkeypatch, module, tmp_path / "empty-builtins")
+    _bind_runtime_context(monkeypatch, module, storage_root=tmp_path / "storage")
+
+    with pytest.raises(ValueError, match="escapes templates dir"):
+        module.WorkloopTodoManager().workloop_list_templates(None)

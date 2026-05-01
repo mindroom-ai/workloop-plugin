@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import util
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -75,6 +74,12 @@ class ScheduleContextStub:
 
 
 @dataclass
+class TargetStub:
+    source_thread_id: str | None
+    resolved_thread_id: str
+
+
+@dataclass
 class EnvelopeStub:
     body: str
     room_id: str = "!room:test"
@@ -82,9 +87,9 @@ class EnvelopeStub:
     resolved_thread_id: str = "$reply"
 
     @property
-    def target(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            thread_id=self.thread_id,
+    def target(self) -> TargetStub:
+        return TargetStub(
+            source_thread_id=self.thread_id,
             resolved_thread_id=self.resolved_thread_id,
         )
 

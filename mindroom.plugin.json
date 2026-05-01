@@ -1,5 +1,6 @@
 {
   "name": "workloop",
   "hooks_module": "hooks.py",
-  "tools_module": "tools.py"
+  "tools_module": "tools.py",
+  "skills": ["skills"]
 }

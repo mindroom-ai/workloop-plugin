@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mindroom.hooks import hook
 from . import commands, formatting, poke, runtime as workloop_runtime, state, todos
@@ -20,6 +20,9 @@ _parse_poke_interval_seconds = poke._parse_poke_interval_seconds
 _build_auto_poke_runtime = poke._build_auto_poke_runtime
 _has_pending_schedules = poke._has_pending_schedules
 _should_poke_agent = poke._should_poke_agent
+
+if TYPE_CHECKING:
+    from mindroom.hooks.context import ScheduleFiredContext
 
 _AUTO_POKE_TASK: asyncio.Task[None] | None = None
 
@@ -51,9 +54,9 @@ async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
     priority=100,
     timeout_ms=5000,
 )
-async def auto_poke(ctx: Any) -> None:
+async def auto_poke(ctx: ScheduleFiredContext) -> None:
     """Suppress deprecated scheduled `!workloop-tick` heartbeats."""
-    if getattr(ctx, "message_text", "").strip() != "!workloop-tick":
+    if ctx.message_text.strip() != "!workloop-tick":
         return
     logger.warning(
         "workloop-auto-poke: suppressing deprecated scheduled !workloop-tick heartbeat"
