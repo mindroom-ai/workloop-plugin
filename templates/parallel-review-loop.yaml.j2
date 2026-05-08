@@ -23,7 +23,7 @@ todos:
   - title: "Triage feedback per SOUL #1b — drop theoretical edges, defensive checks, scope creep, options nobody asked for (gate: triaged set written)"
     depends_on: [5]
     priority: high
-  - title: "If all {{ N_REVIEWERS }} APPROVE on same SHA → mark this todo done to exit loop. Else: forward triaged feedback to existing implementer (gate: branch decision made)"
+  - title: "If all {{ N_REVIEWERS }} APPROVE on same SHA → mark this todo done to exit loop. Else: forward triaged feedback to existing implementer. The forwarded prompt MUST end verbatim with the canonical 'symptoms, not a patch list' framing paragraph from skills/parallel-review-loop/references/prompt-templates.md 'Feeding Reviews to Implementer' — no paraphrasing, no abbreviation, every round (gate: branch decision made AND, if forwarded, prompt contains the exact framing paragraph)"
     depends_on: [6]
     priority: high
   - title: "If step 7 forwarded changes: implementer (kept alive) applies fixes, produces new SHA. Else: mark complete immediately as no-op (gate: new commit on branch OR step 7 was unanimous approve)"
