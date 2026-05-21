@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, Mock
 
 import aiosqlite
 import pytest
-from mindroom.matrix.cache import AgentMessageSnapshotUnavailable
-from mindroom.matrix.cache.agent_message_snapshot import load_agent_message_snapshot
-from mindroom.matrix.cache.event_cache import _EventCache
+from mindroom.matrix.cache.agent_message_snapshot import (
+    AgentMessageSnapshotUnavailable,
+)
 
 PACKAGE_NAME = (
     f"mindroom_plugin_{Path(__file__).resolve().parents[1].name.replace('-', '_')}"
@@ -174,6 +174,13 @@ def _todo(todo_id: str, title: str, agent_name: str) -> dict[str, Any]:
     }
 
 
+def test_agent_matrix_user_id_uses_current_identity_api(tmp_path: Path) -> None:
+    module = _load_hooks_module()
+    ctx = ScanContextStub(tmp_path, agents={"worker": object()})
+
+    assert module.poke._agent_matrix_user_id(ctx, "worker") == "@worker:test"
+
+
 def _make_envelope(
     *,
     room_id: str,
@@ -237,6 +244,12 @@ async def _read_snapshot_from_cache(
     thread_id: str | None,
     runtime_started_at: float | None,
 ) -> Any:
+    try:
+        from mindroom.matrix.cache.agent_message_snapshot import (
+            load_agent_message_snapshot,
+        )
+    except ImportError:
+        pytest.skip("current MindRoom runtime does not expose cache snapshot loader")
     async with aiosqlite.connect(state_root / "event_cache.db") as db:
         return await load_agent_message_snapshot(
             db,
@@ -245,6 +258,14 @@ async def _read_snapshot_from_cache(
             sender=sender,
             runtime_started_at=runtime_started_at,
         )
+
+
+def _event_cache_class() -> type[Any]:
+    try:
+        from mindroom.matrix.cache.event_cache import _EventCache
+    except ImportError:
+        pytest.skip("current MindRoom runtime does not expose the sqlite event cache")
+    return _EventCache
 
 
 @pytest.mark.asyncio
@@ -339,7 +360,7 @@ async def test_latest_message_read_failure_fails_closed(tmp_path: Path) -> None:
 async def test_room_scope_reader_uses_real_cache_accessor(tmp_path: Path) -> None:
     module = _load_hooks_module()
     room_id = "!room:test"
-    cache = _EventCache(tmp_path / "event_cache.db")
+    cache = _event_cache_class()(tmp_path / "event_cache.db")
     await cache.initialize()
     try:
         await cache.store_events_batch(
@@ -430,7 +451,7 @@ async def test_threaded_reader_uses_runtime_started_at_for_busy_gate(
     module = _load_hooks_module()
     room_id = "!room:test"
     thread_id = "$threadA"
-    cache = _EventCache(tmp_path / "event_cache.db")
+    cache = _event_cache_class()(tmp_path / "event_cache.db")
     await cache.initialize()
     try:
         await cache.replace_thread(

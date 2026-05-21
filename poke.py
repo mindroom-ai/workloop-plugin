@@ -44,7 +44,7 @@ STREAM_STATUS_SANITY_TIMEOUT_SECONDS = 1800
 
 def _agent_matrix_user_id(ctx: PokeScanContext, agent_name: str) -> str:
     domain = ctx.config.get_domain(ctx.runtime_paths)
-    return MatrixID.from_agent(agent_name, domain, ctx.runtime_paths).full_id
+    return MatrixID.from_username(agent_name, domain).full_id
 
 
 def _record_last_response(state_root: Path, agent_name: str) -> None:
