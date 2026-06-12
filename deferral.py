@@ -3,7 +3,9 @@
 A scheduled fire that lands right after a service restart can dispatch an
 agent before sandbox workers are ready: its worker-routed tool calls fail
 while the worker is still initializing and the scheduled run is lost. This
-module gates ``schedule:fired`` deliveries during the startup window:
+module gates ``schedule:fired`` deliveries during the startup window — the
+first ``worker_ready_cap_seconds`` after plugin load, which also bounds how
+long a deferred fire may wait:
 
 - When workers are ready (the steady-state case) the fire is untouched, and
   outside the startup window the gate does not even probe.
@@ -32,10 +34,9 @@ from typing import Any, Protocol
 
 from .state import locked_update_json, read_json
 
-DEFAULT_WORKER_READY_GATE_WINDOW_SECONDS = 300
 DEFAULT_WORKER_READY_CAP_SECONDS = 300
-DEFAULT_WORKER_READY_POLL_SECONDS = 5
-DEFAULT_WORKER_READY_POST_JITTER_SECONDS = 2
+WORKER_READY_POLL_SECONDS = 5
+WORKER_READY_POST_JITTER_SECONDS = 2
 PROBE_TIMEOUT_SECONDS = 3.0
 MAX_POST_ATTEMPTS = 5
 
@@ -54,9 +55,8 @@ def _monotonic() -> float:
 
 
 class DeferredFireRuntime(Protocol):
-    """What the gate and waiter need from a hook context or poke runtime."""
+    """What the waiter needs from a hook context or poke runtime."""
 
-    settings: dict[str, Any]
     config: Any
     runtime_paths: Any
     logger: Any
@@ -207,28 +207,22 @@ async def gate_scheduled_fire(ctx: Any) -> bool:
     """
     settings = ctx.settings or {}
     log = ctx.logger
-    window = _setting_seconds(
-        settings,
-        "worker_ready_gate_window_seconds",
-        DEFAULT_WORKER_READY_GATE_WINDOW_SECONDS,
-        log,
-    )
-    if window <= 0:
-        return False
-    state_root = ctx.state_root
-    if not in_startup_window(window) or await workers_ready(
-        ctx.runtime_paths, ctx.config, log
-    ):
-        # A live fire supersedes any journaled copy of the same task left
-        # over from an earlier deferral, so the run still posts exactly once.
-        discard_fire(state_root, ctx.task_id)
-        return False
     cap = _setting_seconds(
         settings,
         "worker_ready_cap_seconds",
         DEFAULT_WORKER_READY_CAP_SECONDS,
         log,
     )
+    if cap <= 0:
+        return False
+    state_root = ctx.state_root
+    if not in_startup_window(cap) or await workers_ready(
+        ctx.runtime_paths, ctx.config, log
+    ):
+        # A live fire supersedes any journaled copy of the same task left
+        # over from an earlier deferral, so the run still posts exactly once.
+        discard_fire(state_root, ctx.task_id)
+        return False
     now = _utcnow()
     enqueue_fire(
         state_root,
@@ -258,14 +252,8 @@ def _is_capped(entry: dict[str, Any], now: datetime) -> bool:
         return True
 
 
-def _post_jitter_seconds(settings: dict[str, Any], log: Any) -> float:
-    jitter = _setting_seconds(
-        settings,
-        "worker_ready_post_jitter_seconds",
-        DEFAULT_WORKER_READY_POST_JITTER_SECONDS,
-        log,
-    )
-    return random.uniform(0, max(jitter, 0))
+def _post_jitter_seconds() -> float:
+    return random.uniform(0, WORKER_READY_POST_JITTER_SECONDS)
 
 
 async def _post_deferred_fire(
@@ -320,16 +308,6 @@ async def _post_deferred_fire(
 async def deferred_fire_loop(runtime: DeferredFireRuntime) -> None:
     """Re-post journaled scheduled fires once workers are ready or capped out."""
     log = runtime.logger
-    settings = runtime.settings or {}
-    poll = max(
-        1,
-        _setting_seconds(
-            settings,
-            "worker_ready_poll_seconds",
-            DEFAULT_WORKER_READY_POLL_SECONDS,
-            log,
-        ),
-    )
     post_attempts: dict[str, int] = {}
     log.info("workloop-deferred-fires: waiter started")
     try:
@@ -343,7 +321,7 @@ async def deferred_fire_loop(runtime: DeferredFireRuntime) -> None:
             due = entries if ready else [e for e in entries if _is_capped(e, now)]
             posted_all = True
             if due:
-                await _sleep(_post_jitter_seconds(settings, log))
+                await _sleep(_post_jitter_seconds())
                 for entry in due:
                     posted = await _post_deferred_fire(
                         runtime, entry, ready=ready, post_attempts=post_attempts
@@ -351,7 +329,7 @@ async def deferred_fire_loop(runtime: DeferredFireRuntime) -> None:
                     posted_all = posted_all and posted
                 if posted_all:
                     continue
-            await _sleep(poll)
+            await _sleep(WORKER_READY_POLL_SECONDS)
     except asyncio.CancelledError:
         log.info("workloop-deferred-fires: waiter cancelled")
         raise

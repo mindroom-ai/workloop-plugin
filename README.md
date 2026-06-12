@@ -110,14 +110,11 @@ Plugin settings in `config.yaml`:
 | `max_pokes_per_tick` | `3` | Maximum number of poke messages sent in one scan cycle |
 | `min_idle_before_poke_seconds` | `600` | Minimum idle time before a thread becomes eligible for a poke |
 | `max_items_in_enrichment` | `10` | Maximum number of actionable or blocked items shown in prompt enrichment |
-| `worker_ready_gate_window_seconds` | `300` | How long after startup scheduled fires are gated on worker readiness; `0` disables the gate |
-| `worker_ready_cap_seconds` | `300` | Maximum time a deferred fire waits for worker readiness before posting anyway |
-| `worker_ready_poll_seconds` | `5` | How often the deferred-fire waiter re-probes worker readiness |
-| `worker_ready_post_jitter_seconds` | `2` | Upper bound of the random delay applied before posting deferred fires |
+| `worker_ready_cap_seconds` | `300` | Startup window during which scheduled fires are gated on worker readiness, and the maximum time a deferred fire waits before posting anyway; `0` disables the gate |
 
 ### Startup-safe scheduled fires
 
-A scheduled fire that lands right after a service restart can dispatch an agent before sandbox workers are ready, so its worker-routed tool calls fail and the run is lost. During the first `worker_ready_gate_window_seconds` after startup, the `auto_poke` hook probes worker readiness on each `schedule:fired` event:
+A scheduled fire that lands right after a service restart can dispatch an agent before sandbox workers are ready, so its worker-routed tool calls fail and the run is lost. During the first `worker_ready_cap_seconds` after startup, the `auto_poke` hook probes worker readiness on each `schedule:fired` event:
 
 - Workers ready (the steady-state case): the fire is delivered unchanged. Outside the window the gate does not probe at all, so there is no added latency.
 - Workers still starting: the fire is journaled to plugin state (`deferred_fires.json`), suppressed, and re-posted by a background waiter once workers become ready — after a small jitter — or once `worker_ready_cap_seconds` expires, in which case it posts anyway. A gated fire is never silently dropped, and multiple fires deferred in the same window each post exactly once, in order.

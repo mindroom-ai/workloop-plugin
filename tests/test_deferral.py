@@ -61,7 +61,6 @@ class ScheduleFiredContextStub:
 @dataclass
 class WaiterRuntimeStub:
     _state_root: Path
-    settings: dict[str, Any] = field(default_factory=dict)
     config: Any = None
     runtime_paths: Any = None
     logger: Mock = field(default_factory=Mock)
@@ -157,14 +156,14 @@ async def test_fire_outside_startup_window_skips_probe(
 
 
 @pytest.mark.asyncio
-async def test_zero_window_setting_disables_gate(
+async def test_zero_cap_setting_disables_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_hooks_module()
     deferral = module.deferral
     _force_window(monkeypatch, deferral, inside=True)
     probe_calls = _set_readiness(monkeypatch, deferral, False)
-    ctx = _make_ctx(tmp_path, settings={"worker_ready_gate_window_seconds": 0})
+    ctx = _make_ctx(tmp_path, settings={"worker_ready_cap_seconds": 0})
 
     deferred = await deferral.gate_scheduled_fire(ctx)
 
