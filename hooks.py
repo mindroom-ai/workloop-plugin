@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from mindroom.hooks import hook
-from . import commands, formatting, poke, runtime as workloop_runtime, state, todos
+from . import commands, deferral, formatting, poke, runtime as workloop_runtime, state, todos
 from .runtime import (
     AutoPokeRuntime,
     DEFAULT_POKE_INTERVAL_SECONDS,
@@ -20,11 +20,35 @@ _parse_poke_interval_seconds = poke._parse_poke_interval_seconds
 _build_auto_poke_runtime = poke._build_auto_poke_runtime
 _has_pending_schedules = poke._has_pending_schedules
 _should_poke_agent = poke._should_poke_agent
+_gate_scheduled_fire = deferral.gate_scheduled_fire
+_deferred_fire_loop = deferral.deferred_fire_loop
 
 if TYPE_CHECKING:
     from mindroom.hooks.context import ScheduleFiredContext
 
 _AUTO_POKE_TASK: asyncio.Task[None] | None = None
+_DEFERRED_FIRE_TASK: asyncio.Task[None] | None = None
+
+
+def _ensure_deferred_fire_waiter(runtime: Any) -> None:
+    """Start the deferred-fire waiter unless one is already running."""
+    global _DEFERRED_FIRE_TASK
+    if _DEFERRED_FIRE_TASK is not None and not _DEFERRED_FIRE_TASK.done():
+        return
+    _DEFERRED_FIRE_TASK = asyncio.create_task(
+        _deferred_fire_loop(runtime), name="workloop-deferred-fires"
+    )
+
+
+def _resume_deferred_fires(runtime: AutoPokeRuntime) -> None:
+    """Restart the waiter for fires journaled before a process restart."""
+    try:
+        if deferral.has_pending_fires(runtime.state_root):
+            _ensure_deferred_fire_waiter(runtime)
+    except Exception:
+        runtime.logger.exception(
+            "workloop-deferred-fires: failed to resume journaled fires"
+        )
 
 
 async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
@@ -55,13 +79,20 @@ async def _auto_poke_loop(runtime: AutoPokeRuntime) -> None:
     timeout_ms=5000,
 )
 async def auto_poke(ctx: ScheduleFiredContext) -> None:
-    """Suppress deprecated scheduled `!workloop-tick` heartbeats."""
-    if ctx.message_text.strip() != "!workloop-tick":
+    """Suppress deprecated heartbeats and defer fires while workers start.
+
+    A fire that lands while sandbox workers are still starting is journaled
+    and suppressed here, then re-posted by the deferred-fire waiter once
+    workers are ready (or once the cap expires) — never silently dropped.
+    """
+    if ctx.message_text.strip() == "!workloop-tick":
+        logger.warning(
+            "workloop-auto-poke: suppressing deprecated scheduled !workloop-tick heartbeat"
+        )
+        ctx.suppress = True
         return
-    logger.warning(
-        "workloop-auto-poke: suppressing deprecated scheduled !workloop-tick heartbeat"
-    )
-    ctx.suppress = True
+    if await _gate_scheduled_fire(ctx):
+        _ensure_deferred_fire_waiter(ctx)
 
 
 async def start_auto_poke_loop(ctx: Any) -> None:
@@ -77,14 +108,27 @@ async def start_auto_poke_loop(ctx: Any) -> None:
     _AUTO_POKE_TASK = asyncio.create_task(
         _auto_poke_loop(runtime), name="workloop-auto-poke"
     )
+    _resume_deferred_fires(runtime)
 
 
 async def stop_auto_poke_loop(ctx: Any) -> None:
     """Cancel the background auto-poke loop when the router stops."""
-    global _AUTO_POKE_TASK
+    global _AUTO_POKE_TASK, _DEFERRED_FIRE_TASK
 
     if ctx.entity_name != ROUTER_AGENT_NAME:
         return
+
+    deferred_task = _DEFERRED_FIRE_TASK
+    if deferred_task is not None:
+        deferred_task.cancel()
+        try:
+            await deferred_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if _DEFERRED_FIRE_TASK is deferred_task:
+                _DEFERRED_FIRE_TASK = None
+
     task = _AUTO_POKE_TASK
     if task is None:
         return
@@ -134,6 +178,7 @@ async def restart_auto_poke_loop_on_reload(ctx: Any) -> None:
         _auto_poke_loop(runtime), name="workloop-auto-poke"
     )
     runtime.logger.info("workloop-auto-poke: started (after config reload)")
+    _resume_deferred_fires(runtime)
 
 
 restart_auto_poke_loop_on_reload = hook(
@@ -161,6 +206,7 @@ def _ensure_auto_poke_loop_running(ctx: Any) -> None:
         _auto_poke_loop(runtime), name="workloop-auto-poke"
     )
     runtime.logger.info("workloop-auto-poke: lazy-started after reload")
+    _resume_deferred_fires(runtime)
 
 
 async def workloop_command(ctx: Any) -> None:
@@ -195,18 +241,24 @@ workloop_react = todos.workloop_react
 
 __all__ = [
     "_AUTO_POKE_TASK",
+    "_DEFERRED_FIRE_TASK",
     "AutoPokeRuntime",
     "DEFAULT_POKE_INTERVAL_SECONDS",
     "ROUTER_AGENT_NAME",
     "_AUTO_POKE_HOOK_SOURCE",
     "_auto_poke_loop",
     "_build_auto_poke_runtime",
+    "_deferred_fire_loop",
+    "_ensure_deferred_fire_waiter",
+    "_gate_scheduled_fire",
     "_has_pending_schedules",
     "_parse_poke_interval_seconds",
+    "_resume_deferred_fires",
     "_run_poke_scan",
     "_should_poke_agent",
     "auto_poke",
     "commands",
+    "deferral",
     "formatting",
     "inject_todos",
     "logger",
