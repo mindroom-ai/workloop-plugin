@@ -31,13 +31,13 @@ from jinja2.sandbox import SandboxedEnvironment, SecurityError
 from pydantic import ValidationError
 import yaml
 
-from mindroom.tool_system.metadata import (
+from mindroom.tool_system.declarations import (
     SetupType,
     ToolCategory,
     ToolManagedInitArg,
     ToolStatus,
-    register_tool_with_metadata,
 )
+from mindroom.tool_system.registration import register_tool_with_metadata
 from mindroom.tool_system.runtime_context import (
     build_execution_identity_from_runtime_context,
     get_plugin_state_root,
