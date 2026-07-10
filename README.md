@@ -1,5 +1,8 @@
 # Workloop
 
+> [!IMPORTANT]
+> **This plugin is archived.** Workloop's functionality is now built into [MindRoom](https://github.com/mindroom-ai/mindroom) as the native [`todo` tool](https://docs.mindroom.chat/tools/project-management/#todo) — per-thread work plans with priorities, dependencies, assignments, and templates, available out of the box with no plugin installation. This repository is kept read-only for reference.
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-plugins-blue)](https://docs.mindroom.chat/plugins/)
 [![Hooks](https://img.shields.io/badge/docs-hooks-blue)](https://docs.mindroom.chat/hooks/)
